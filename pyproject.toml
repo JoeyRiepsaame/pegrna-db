@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pegrna-db"
+version = "0.1.0"
+description = "Automated (e)pegRNA database from scientific literature"
+requires-python = ">=3.11"
+dependencies = [
+    "biopython>=1.83",
+    "anthropic>=0.40.0",
+    "sqlalchemy>=2.0",
+    "pandas>=2.1",
+    "openpyxl>=3.1",
+    "pydantic>=2.5",
+    "typer>=0.12",
+    "rich>=13.7",
+    "requests>=2.31",
+    "streamlit>=1.38",
+    "plotly>=5.18",
+    "python-dotenv>=1.0",
+    "xlrd>=2.0",
+]
+
+[project.scripts]
+pegrna-db = "cli:app"
+
+[tool.setuptools.packages.find]
+include = ["database*", "discovery*", "retrieval*", "extraction*", "webapp*"]

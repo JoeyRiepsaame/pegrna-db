@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: pegrna-db
+Version: 0.1.0
+Summary: Automated (e)pegRNA database from scientific literature
+Requires-Python: >=3.11
+Requires-Dist: biopython>=1.83
+Requires-Dist: anthropic>=0.40.0
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: pandas>=2.1
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: pydantic>=2.5
+Requires-Dist: typer>=0.12
+Requires-Dist: rich>=13.7
+Requires-Dist: requests>=2.31
+Requires-Dist: streamlit>=1.38
+Requires-Dist: plotly>=5.18
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: xlrd>=2.0
