@@ -2,6 +2,7 @@
 import re
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 from rich.console import Console
 
@@ -9,6 +10,15 @@ import config
 from extraction.schemas import PegRNAExtracted
 
 console = Console()
+
+
+def _to_python(val):
+    """Convert pandas/numpy value to native Python type, NaN to None."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    if hasattr(val, 'item'):  # numpy scalar
+        return val.item()
+    return val
 
 
 def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
@@ -47,7 +57,7 @@ def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
             for target_field, source_col in col_mapping.items():
                 val = row.get(source_col)
                 if pd.notna(val):
-                    entry_data[target_field] = val
+                    entry_data[target_field] = _to_python(val)
 
             # Parse the description column for name, gene, and type info
             if desc_col:
@@ -215,6 +225,8 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
     """Map DataFrame columns to pegRNA entry fields.
 
     Returns dict mapping target_field -> source_column_name.
+    Prefers exact matches, then substring matches, skipping length/count columns
+    when mapping sequence fields.
     """
     mapping = {}
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
@@ -233,32 +245,55 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
     # Additional direct mappings
     direct_mappings = {
         "pegrna_type": ["pegrna_type", "peg_type", "grna_type", "type"],
-        "entry_name": ["name", "id", "pegrna_name", "pegrna_id", "guide_name"],
-        "pbs_length": ["pbs_length", "pbs_len", "pbs length"],
-        "rtt_length": ["rtt_length", "rtt_len", "rtt length", "rt_length"],
+        "entry_name": ["name", "id", "pegrna_name", "pegrna_id", "guide_name",
+                        "finalname"],
+        "pbs_length": ["pbslength", "pbs_length", "pbs_len", "pbs length"],
+        "rtt_length": ["rtlength", "rtt_length", "rtt_len", "rtt length",
+                        "rt_length"],
         "target_organism": ["organism", "species"],
         "target_locus": ["locus", "position", "genomic_position", "coordinates"],
-        "edit_description": ["edit_description", "edit", "mutation", "variant"],
-        "intended_mutation": ["intended_mutation", "desired_edit", "desired_mutation"],
+        "edit_description": ["edit_description", "edit", "mutation", "variant",
+                             "phenotype"],
+        "intended_mutation": ["intended_mutation", "desired_edit", "desired_mutation",
+                              "referenceallele", "alternateallele"],
         "product_purity": ["purity", "product_purity", "correct_edit_pct"],
-        "indel_frequency": ["indel", "indel_freq", "indel_frequency", "indels"],
+        "indel_frequency": ["indel", "indel_freq", "indel_frequency", "indels",
+                            "averageindel"],
         "delivery_method": ["delivery", "delivery_method", "transfection"],
         "nicking_sgrna_seq": ["nicking", "nick_sgrna", "ngsrna", "pe3_nick"],
-        "three_prime_extension": ["3_prime", "3prime", "3' motif", "extension",
+        "three_prime_extension": ["3_prime", "3prime", "3' motif",
                                    "motif", "evopreq", "mpknot", "tevopreq"],
         "linker_sequence": ["linker", "linker_sequence"],
         "full_sequence": ["full_sequence", "full_seq", "pegrna_sequence",
                          "pegrna_seq", "full length"],
     }
 
+    # Columns to skip for sequence fields (contain numeric data, not sequences)
+    length_keywords = {"length", "len", "count", "content", "mt", "mfe",
+                       "location", "position", "matches", "values"}
+
     all_patterns = {**field_patterns, **direct_mappings}
 
+    # Pass 1: exact matches (col_lower == pattern)
     for field, patterns in all_patterns.items():
         if field in mapping:
             continue
         for pat in patterns:
+            if pat in cols_lower:
+                mapping[field] = cols_lower[pat]
+                break
+
+    # Pass 2: substring matches (pattern in col_lower)
+    for field, patterns in all_patterns.items():
+        if field in mapping:
+            continue
+        is_seq_field = field.endswith("_sequence") or field == "spacer_sequence"
+        for pat in patterns:
             for col_lower, col_original in cols_lower.items():
                 if pat in col_lower and field not in mapping:
+                    # Skip length/count columns when looking for sequences
+                    if is_seq_field and any(kw in col_lower for kw in length_keywords):
+                        continue
                     mapping[field] = col_original
                     break
             if field in mapping:

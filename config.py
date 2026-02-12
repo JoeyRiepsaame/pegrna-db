@@ -47,34 +47,35 @@ LLM_MODEL = "claude-sonnet-4-5-20250929"
 LLM_MAX_TOKENS = 4096
 
 # Column name patterns for rule-based extraction (case-insensitive)
+# Patterns are tried in order; put most specific first
 SPACER_PATTERNS = [
-    "spacer", "guide", "protospacer", "target_sequence", "guide_sequence",
-    "sgrna", "grna", "spacer_sequence",
+    "spacer_sequence", "spacer", "guide_sequence", "guide",
+    "protospacer", "target_sequence", "sgrna", "grna",
 ]
 PBS_PATTERNS = [
-    "pbs", "primer_binding", "primer binding site", "pbs_sequence",
-    "pbs_length", "pbs_len",
+    "pbs_sequence", "pbs_seq", "primer_binding", "primer binding site",
+    "pbs",
 ]
 RTT_PATTERNS = [
-    "rtt", "rt_template", "reverse transcriptase template", "rtt_sequence",
-    "rtt_length", "rtt_len", "rt template", "template",
+    "rtt_sequence", "rtt_seq", "rt_template", "rt_seq",
+    "reverse transcriptase template", "rt template", "rtt",
 ]
 EFFICIENCY_PATTERNS = [
-    "efficiency", "editing_efficiency", "edit_eff", "pe_efficiency",
+    "editing_efficiency", "efficiency", "edit_eff", "pe_efficiency",
     "percent_editing", "% editing", "editing (%)", "editing rate",
+    "averageedited", "percentageedited",
 ]
 EDIT_TYPE_PATTERNS = [
     "edit_type", "mutation_type", "edit type", "mutation type",
-    "variant_type", "substitution", "insertion", "deletion",
+    "variant_type", "correction_type",
 ]
 CELL_TYPE_PATTERNS = [
     "cell_type", "cell_line", "cell line", "cell type", "cells",
 ]
 GENE_PATTERNS = [
-    "gene", "target_gene", "locus", "target_locus", "target gene",
-    "target site", "target_site",
+    "target_gene", "target gene", "target_site", "target site",
+    "gene", "target",
 ]
 PE_VERSION_PATTERNS = [
-    "pe_version", "prime_editor", "editor", "pe version", "pe2", "pe3",
-    "pe4", "pe5", "pe7", "prime editor",
+    "pe_version", "prime_editor", "prime editor", "pe version",
 ]

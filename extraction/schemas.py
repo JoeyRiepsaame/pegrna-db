@@ -1,10 +1,32 @@
 """Pydantic schemas for pegRNA data validation."""
+import math
 import re
 from typing import Optional
 from pydantic import BaseModel, field_validator, model_validator
 
 
 DNA_PATTERN = re.compile(r"^[ACGTUacgtu]+$")
+
+
+def _coerce_to_str(v):
+    """Convert any value to string, handling numpy/pandas types and NaN."""
+    if v is None:
+        return None
+    # Handle NaN (float or numpy)
+    try:
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    # Convert numpy scalars to Python natives
+    if hasattr(v, 'item'):
+        v = v.item()
+    if isinstance(v, (int, float)):
+        # Convert numeric to string
+        if isinstance(v, float) and v == int(v):
+            return str(int(v))
+        return str(v)
+    return str(v) if v is not None else None
 
 
 class PegRNAExtracted(BaseModel):
@@ -48,6 +70,14 @@ class PegRNAExtracted(BaseModel):
     # Extraction metadata
     confidence_score: float = 0.5
     raw_source_text: Optional[str] = None
+
+    @field_validator("three_prime_extension", "target_locus", "target_organism",
+                     "edit_description", "intended_mutation", "entry_name",
+                     "delivery_method", "raw_source_text",
+                     mode="before")
+    @classmethod
+    def coerce_string_fields(cls, v):
+        return _coerce_to_str(v)
 
     @field_validator("spacer_sequence", "pbs_sequence", "rtt_sequence",
                      "linker_sequence", "full_sequence", "nicking_sgrna_seq",
@@ -99,7 +129,7 @@ class PegRNAExtracted(BaseModel):
         mapping = {
             "sub": "substitution", "substitution": "substitution",
             "point mutation": "substitution", "snv": "substitution",
-            "replacement": "substitution",
+            "replacement": "substitution", "snp": "substitution",
             "ins": "insertion", "insertion": "insertion",
             "del": "deletion", "deletion": "deletion",
         }

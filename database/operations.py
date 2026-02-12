@@ -35,10 +35,12 @@ def add_pegrna_entry(session: Session, paper_id: int, **kwargs) -> PegRNAEntry:
     return entry
 
 
-def bulk_add_entries(session: Session, paper_id: int, entries: list[dict]) -> int:
-    """Add multiple pegRNA entries. Returns count added."""
+def bulk_add_entries(session: Session, paper_id: int, entries: list) -> int:
+    """Add multiple pegRNA entries. Accepts dicts or PegRNAExtracted objects."""
     count = 0
     for entry_data in entries:
+        if hasattr(entry_data, 'to_db_dict'):
+            entry_data = entry_data.to_db_dict()
         entry = PegRNAEntry(paper_id=paper_id, **entry_data)
         session.add(entry)
         count += 1
