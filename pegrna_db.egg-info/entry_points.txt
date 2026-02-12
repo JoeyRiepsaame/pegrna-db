@@ -1,2 +1,0 @@
-[console_scripts]
-pegrna-db = cli:app

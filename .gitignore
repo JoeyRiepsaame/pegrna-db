@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+*.egg-info/
+data/raw_papers/
+data/pegrna_export.csv
+.DS_Store
