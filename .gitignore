@@ -1,7 +1,33 @@
+# Environment variables
 .env
+.env.local
+
+# Python
 __pycache__/
 *.pyc
+*.py[cod]
 *.egg-info/
+*.so
+build/
+dist/
+
+# Data (keep database, exclude raw papers)
 data/raw_papers/
 data/pegrna_export.csv
+*.pdf
+*.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log
