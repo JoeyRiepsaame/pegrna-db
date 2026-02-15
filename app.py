@@ -72,7 +72,36 @@ if page == "Search & Browse":
 
     validated_only = st.checkbox("Validated entries only")
 
+    col_page1, col_page2 = st.columns(2)
+    with col_page1:
+        page_size = st.selectbox("Results per page", [100, 500, 1000, 5000], index=1)
+    with col_page2:
+        page_num = st.number_input("Page", min_value=1, value=1, step=1)
+
+    # Count total matching entries
+    from database.models import PegRNAEntry as _PE
+    count_query = session.query(_PE)
+    if gene_filter:
+        count_query = count_query.filter(_PE.target_gene.ilike(f"%{gene_filter}%"))
+    if edit_type_filter != "All":
+        count_query = count_query.filter(_PE.edit_type.ilike(f"%{edit_type_filter}%"))
+    if pe_filter:
+        count_query = count_query.filter(_PE.prime_editor.ilike(f"%{pe_filter}%"))
+    if cell_filter:
+        count_query = count_query.filter(_PE.cell_type.ilike(f"%{cell_filter}%"))
+    if pegrna_type_filter != "All":
+        count_query = count_query.filter(_PE.pegrna_type.ilike(f"%{pegrna_type_filter}%"))
+    if min_eff > 0:
+        count_query = count_query.filter(_PE.editing_efficiency >= min_eff)
+    if max_eff < 100:
+        count_query = count_query.filter(_PE.editing_efficiency <= max_eff)
+    if validated_only:
+        count_query = count_query.filter(_PE.validated.is_(True))
+    total_count = count_query.count()
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+
     # Query
+    offset = (page_num - 1) * page_size
     results = search_entries(
         session,
         target_gene=gene_filter or None,
@@ -83,10 +112,11 @@ if page == "Search & Browse":
         min_efficiency=min_eff if min_eff > 0 else None,
         max_efficiency=max_eff if max_eff < 100 else None,
         validated_only=validated_only,
-        limit=500,
+        limit=page_size,
+        offset=offset,
     )
 
-    st.markdown(f"**{len(results)} entries found**")
+    st.markdown(f"**{total_count:,} entries found** (showing {offset+1}-{min(offset+page_size, total_count)} of {total_count:,}, page {page_num}/{total_pages})")
 
     if results:
         # Build display dataframe
@@ -176,74 +206,102 @@ elif page == "Statistics":
     col6.metric("Unique Cell Types", stats["unique_cell_types"])
     col7.metric("Unique Organisms", stats["unique_organisms"])
 
-    # Charts
+    # Charts - using SQL aggregations for performance (264k+ entries)
     if stats["total_entries"] > 0:
-        entries = session.query(PegRNAEntry).all()
-        df = pd.DataFrame([{
-            "edit_type": e.edit_type,
-            "pegrna_type": e.pegrna_type,
-            "prime_editor": e.prime_editor,
-            "cell_type": e.cell_type,
-            "target_gene": e.target_gene,
-            "efficiency": e.editing_efficiency,
-            "year": e.paper.year if e.paper else None,
-        } for e in entries])
+        from sqlalchemy import func, distinct, case
 
+        # Edit type distribution
         st.subheader("Distribution of Edit Types")
-        if "edit_type" in df.columns and df["edit_type"].notna().any():
-            fig = px.pie(
-                df[df["edit_type"].notna()],
-                names="edit_type",
-                title="Edit Types",
-            )
+        edit_type_counts = (
+            session.query(PegRNAEntry.edit_type, func.count(PegRNAEntry.id))
+            .filter(PegRNAEntry.edit_type.isnot(None))
+            .group_by(PegRNAEntry.edit_type)
+            .all()
+        )
+        if edit_type_counts:
+            et_df = pd.DataFrame(edit_type_counts, columns=["edit_type", "count"])
+            fig = px.pie(et_df, names="edit_type", values="count", title="Edit Types")
             st.plotly_chart(fig, use_container_width=True)
 
+        # Efficiency distribution - sample for histogram
         st.subheader("Editing Efficiency Distribution")
-        eff_data = df[df["efficiency"].notna()]
-        if not eff_data.empty:
+        eff_rows = (
+            session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
+            .filter(PegRNAEntry.editing_efficiency.isnot(None))
+            .limit(50000)
+            .all()
+        )
+        if eff_rows:
+            eff_df = pd.DataFrame(eff_rows, columns=["efficiency", "pegrna_type"])
             fig = px.histogram(
-                eff_data,
-                x="efficiency",
-                nbins=50,
-                title="Editing Efficiency Distribution (%)",
-                color="pegrna_type",
-                barmode="overlay",
+                eff_df, x="efficiency", nbins=50,
+                title=f"Editing Efficiency Distribution (%) - {len(eff_rows):,} entries",
+                color="pegrna_type", barmode="overlay",
             )
             st.plotly_chart(fig, use_container_width=True)
 
+        # Top genes
         st.subheader("Top Target Genes")
-        if df["target_gene"].notna().any():
-            gene_counts = df["target_gene"].value_counts().head(20)
-            fig = px.bar(
-                x=gene_counts.index,
-                y=gene_counts.values,
-                title="Top 20 Target Genes",
-                labels={"x": "Gene", "y": "Count"},
-            )
+        gene_counts = (
+            session.query(PegRNAEntry.target_gene, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.target_gene.isnot(None))
+            .group_by(PegRNAEntry.target_gene)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(20)
+            .all()
+        )
+        if gene_counts:
+            gene_df = pd.DataFrame(gene_counts, columns=["Gene", "Count"])
+            fig = px.bar(gene_df, x="Gene", y="Count", title="Top 20 Target Genes")
             st.plotly_chart(fig, use_container_width=True)
 
+        # Prime editor usage
         st.subheader("Prime Editor Usage")
-        if df["prime_editor"].notna().any():
-            pe_counts = df["prime_editor"].value_counts().head(10)
-            fig = px.bar(
-                x=pe_counts.index,
-                y=pe_counts.values,
-                title="Prime Editor Usage",
-                labels={"x": "Editor", "y": "Count"},
-            )
+        pe_counts = (
+            session.query(PegRNAEntry.prime_editor, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.prime_editor.isnot(None))
+            .group_by(PegRNAEntry.prime_editor)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(10)
+            .all()
+        )
+        if pe_counts:
+            pe_df = pd.DataFrame(pe_counts, columns=["Editor", "Count"])
+            fig = px.bar(pe_df, x="Editor", y="Count", title="Prime Editor Usage")
             st.plotly_chart(fig, use_container_width=True)
 
-        # pegRNA vs epegRNA efficiency comparison
+        # pegRNA vs epegRNA efficiency - use aggregated stats
         st.subheader("pegRNA vs epegRNA Efficiency")
-        type_eff = df[df["efficiency"].notna() & df["pegrna_type"].notna()]
-        if not type_eff.empty:
+        type_eff_rows = (
+            session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
+            .filter(
+                PegRNAEntry.editing_efficiency.isnot(None),
+                PegRNAEntry.pegrna_type.isnot(None),
+            )
+            .limit(50000)
+            .all()
+        )
+        if type_eff_rows:
+            type_eff_df = pd.DataFrame(type_eff_rows, columns=["efficiency", "pegrna_type"])
             fig = px.box(
-                type_eff,
-                x="pegrna_type",
-                y="efficiency",
+                type_eff_df, x="pegrna_type", y="efficiency",
                 title="Editing Efficiency: pegRNA vs epegRNA",
                 color="pegrna_type",
             )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Papers by year
+        st.subheader("Papers by Year")
+        year_counts = (
+            session.query(Paper.year, func.count(Paper.id).label("count"))
+            .filter(Paper.year.isnot(None), Paper.extraction_status == "completed")
+            .group_by(Paper.year)
+            .order_by(Paper.year)
+            .all()
+        )
+        if year_counts:
+            year_df = pd.DataFrame(year_counts, columns=["Year", "Papers"])
+            fig = px.bar(year_df, x="Year", y="Papers", title="Completed Papers by Year")
             st.plotly_chart(fig, use_container_width=True)
 
 
