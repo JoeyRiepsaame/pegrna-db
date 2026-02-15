@@ -44,7 +44,7 @@ UNPAYWALL_EMAIL = NCBI_EMAIL
 
 # LLM extraction
 LLM_MODEL = "claude-sonnet-4-5-20250929"
-LLM_MAX_TOKENS = 4096
+LLM_MAX_TOKENS = 8192
 
 # Column name patterns for rule-based extraction (case-insensitive)
 # Patterns are tried in order; put most specific first

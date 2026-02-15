@@ -5,6 +5,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import re
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -12,7 +13,7 @@ import plotly.graph_objects as go
 
 import config
 from database.models import init_db, Paper, PegRNAEntry
-from database.operations import search_entries, get_stats
+from database.operations import search_entries, get_stats, sequence_search
 
 # --- Page Config ---
 st.set_page_config(
@@ -71,6 +72,56 @@ if page == "Search & Browse":
         max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0)
 
     validated_only = st.checkbox("Validated entries only")
+
+    # --- Sequence Search ---
+    with st.expander("Sequence Search (find similar pegRNAs by DNA sequence)", expanded=False):
+        seq_col1, seq_col2, seq_col3 = st.columns([3, 1, 1])
+        with seq_col1:
+            query_seq = st.text_input(
+                "Query Sequence",
+                placeholder="e.g., GGCCCAGACTGAGCACGTGA",
+                help="Enter a DNA sequence (ACGT) to find similar pegRNAs",
+            )
+        with seq_col2:
+            seq_field = st.selectbox("Search Field", ["spacer", "pbs", "rtt", "full"])
+        with seq_col3:
+            max_dist = st.selectbox("Max Mismatches", [0, 1, 2, 3, 4, 5], index=2)
+
+        if query_seq:
+            clean_seq = query_seq.strip().upper().replace("U", "T").replace(" ", "")
+            if not re.match(r"^[ACGT]+$", clean_seq):
+                st.error("Invalid sequence. Use only A, C, G, T characters.")
+            elif len(clean_seq) < 10:
+                st.warning("Sequence too short. Enter at least 10 nucleotides.")
+            else:
+                with st.spinner(f"Searching {seq_field} sequences..."):
+                    seq_results = sequence_search(
+                        session, clean_seq,
+                        max_distance=max_dist,
+                        search_field=seq_field,
+                        limit=200,
+                    )
+                if seq_results:
+                    st.success(f"Found {len(seq_results)} matches (within {max_dist} mismatches)")
+                    seq_rows = []
+                    for r in seq_results:
+                        e = r["entry"]
+                        attr = f"{seq_field}_sequence" if seq_field != "full" else "full_sequence"
+                        seq_rows.append({
+                            "Dist": r["distance"],
+                            "ID": e.id,
+                            "Name": e.entry_name or "-",
+                            "Gene": e.target_gene or "-",
+                            f"{seq_field.upper()}": getattr(e, attr) or "-",
+                            "Edit": e.edit_type or "-",
+                            "Eff (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency else "-",
+                            "PE": e.prime_editor or "-",
+                            "Cell": e.cell_type or "-",
+                            "PMID": e.paper.pmid if e.paper else "-",
+                        })
+                    st.dataframe(pd.DataFrame(seq_rows), use_container_width=True, height=400)
+                else:
+                    st.info("No matches found. Try increasing the max mismatches.")
 
     col_page1, col_page2 = st.columns(2)
     with col_page1:

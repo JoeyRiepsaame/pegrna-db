@@ -1,7 +1,10 @@
 """Database CRUD operations."""
+import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database.models import Paper, PegRNAEntry
 
 
@@ -9,19 +12,34 @@ def get_or_create_paper(
     session: Session,
     pmid: Optional[str] = None,
     doi: Optional[str] = None,
+    title: Optional[str] = None,
     **kwargs,
 ) -> tuple[Paper, bool]:
-    """Get existing paper or create new one. Returns (paper, created)."""
+    """Get existing paper or create new one. Returns (paper, created).
+
+    Also checks for title-based duplicates (preprint vs published).
+    """
     paper = None
     if pmid:
         paper = session.query(Paper).filter_by(pmid=pmid).first()
     if not paper and doi:
         paper = session.query(Paper).filter_by(doi=doi).first()
 
+    # Title-based dedup for preprint/published pairs
+    if not paper and title:
+        existing = session.query(Paper).filter(Paper.title.isnot(None)).all()
+        for ep in existing:
+            sim = SequenceMatcher(
+                None, title.lower().strip(), (ep.title or "").lower().strip()
+            ).ratio()
+            if sim > 0.95:
+                paper = ep
+                break
+
     if paper:
         return paper, False
 
-    paper = Paper(pmid=pmid, doi=doi, **kwargs)
+    paper = Paper(pmid=pmid, doi=doi, title=title, **kwargs)
     session.add(paper)
     session.flush()
     return paper, True
@@ -104,6 +122,63 @@ def search_entries(
         query = query.filter(PegRNAEntry.validated.is_(True))
 
     return query.offset(offset).limit(limit).all()
+
+
+def sequence_search(
+    session: Session,
+    query_sequence: str,
+    max_distance: int = 3,
+    search_field: str = "spacer",
+    limit: int = 100,
+) -> list[dict]:
+    """Search for pegRNA entries by sequence similarity using edit distance.
+
+    Args:
+        query_sequence: DNA sequence to search for (ACGT).
+        max_distance: Maximum edit distance (0 = exact, 1-5 = fuzzy).
+        search_field: Which sequence field: spacer, pbs, rtt, full.
+        limit: Maximum results to return.
+
+    Returns:
+        List of dicts with keys: entry, distance.
+    """
+    import edlib
+
+    query_sequence = query_sequence.strip().upper().replace("U", "T")
+    if not re.match(r"^[ACGT]+$", query_sequence):
+        return []
+
+    field_map = {
+        "spacer": PegRNAEntry.spacer_sequence,
+        "pbs": PegRNAEntry.pbs_sequence,
+        "rtt": PegRNAEntry.rtt_sequence,
+        "full": PegRNAEntry.full_sequence,
+    }
+    column = field_map.get(search_field, PegRNAEntry.spacer_sequence)
+
+    # Pre-filter by length to reduce comparisons
+    qlen = len(query_sequence)
+    entries = (
+        session.query(PegRNAEntry)
+        .filter(column.isnot(None))
+        .filter(func.length(column).between(qlen - max_distance, qlen + max_distance))
+        .all()
+    )
+
+    results = []
+    for entry in entries:
+        attr = f"{search_field}_sequence" if search_field != "full" else "full_sequence"
+        target_seq = getattr(entry, attr)
+        if not target_seq:
+            continue
+
+        aln = edlib.align(query_sequence, target_seq, mode="NW", task="distance", k=max_distance)
+        dist = aln["editDistance"]
+        if dist != -1 and dist <= max_distance:
+            results.append({"entry": entry, "distance": dist})
+
+    results.sort(key=lambda r: (r["distance"], -(r["entry"].editing_efficiency or 0)))
+    return results[:limit]
 
 
 def get_stats(session: Session) -> dict:

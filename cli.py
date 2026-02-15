@@ -312,7 +312,7 @@ def _process_pending_papers(session, force_method: str = "auto"):
 
 def _process_single_paper(session, paper, force_method: str = "auto"):
     """Process a single paper through the extraction pipeline."""
-    from retrieval.pmc_fetcher import fetch_full_text, extract_text_from_bioc, fetch_by_pmid
+    from retrieval.pmc_fetcher import fetch_full_text, extract_text_from_bioc, fetch_by_pmid, fetch_full_text_html
     from retrieval.supplementary import (
         list_supplementary_files, download_supplementary_file,
         parse_supplementary_tables, find_pegrna_tables,
@@ -336,6 +336,10 @@ def _process_single_paper(session, paper, force_method: str = "auto"):
 
     if bioc_data:
         paper_text = extract_text_from_bioc(bioc_data)
+
+    # Step 1b: HTML fallback if BioC failed
+    if not paper_text and paper.pmcid:
+        paper_text = fetch_full_text_html(paper.pmcid) or ""
 
     # Step 2: Try supplementary materials (rule-based)
     if paper.pmcid and force_method in ("auto", "rule"):
@@ -397,6 +401,164 @@ def _process_single_paper(session, paper, force_method: str = "auto"):
             notes="No pegRNA data could be extracted",
         )
         console.print(f"[red]No data extracted from {paper.pmid}[/red]")
+
+
+@app.command()
+def dedup():
+    """Scan for duplicate papers and data quality issues."""
+    from difflib import SequenceMatcher
+    from database.models import Paper, PegRNAEntry
+    from sqlalchemy import func, distinct
+
+    session = get_session()
+    papers = session.query(Paper).all()
+
+    console.print("[bold]Scanning for duplicate papers...[/bold]")
+    seen = []
+    for paper in papers:
+        if not paper.title:
+            continue
+        for other in seen:
+            sim = SequenceMatcher(
+                None, paper.title.lower(), other.title.lower()
+            ).ratio()
+            if sim > 0.90:
+                c1 = session.query(PegRNAEntry).filter_by(paper_id=paper.id).count()
+                c2 = session.query(PegRNAEntry).filter_by(paper_id=other.id).count()
+                console.print(
+                    f"[yellow]Potential dup (sim={sim:.2f}):[/yellow]\n"
+                    f"  PMID {paper.pmid} ({c1} entries): {paper.title[:60]}\n"
+                    f"  PMID {other.pmid} ({c2} entries): {other.title[:60]}"
+                )
+        seen.append(paper)
+
+    console.print("\n[bold]Organism values:[/bold]")
+    organisms = session.query(
+        PegRNAEntry.target_organism, func.count(PegRNAEntry.id)
+    ).filter(
+        PegRNAEntry.target_organism.isnot(None)
+    ).group_by(PegRNAEntry.target_organism).order_by(
+        func.count(PegRNAEntry.id).desc()
+    ).all()
+    for org, count in organisms:
+        console.print(f"  {org}: {count}")
+    session.close()
+
+
+@app.command()
+def batch(
+    max_papers: int = typer.Option(200, "--max", "-m"),
+    skip_reviews: bool = typer.Option(True, "--skip-reviews/--include-reviews"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Batch process: search PubMed, filter, and extract all new papers."""
+    import time
+    import json
+    from discovery.pubmed_search import search_pubmed, fetch_paper_metadata
+    from database.models import Paper
+
+    REVIEW_KEYWORDS = [
+        "review", "perspective", "commentary", "editorial", "meta-analysis",
+        "protocol", "methods only",
+    ]
+    EXPERIMENTAL_INDICATORS = [
+        "we designed", "we tested", "we constructed", "we demonstrated",
+        "editing efficiency", "we generated", "we performed",
+    ]
+
+    session = get_session()
+
+    # Search PubMed with multiple queries
+    queries = [
+        '"prime editing" AND (pegRNA OR epegRNA OR "prime editing guide RNA")',
+        '"prime editing" AND (efficiency OR screen) AND (pegRNA OR guide)',
+        '"prime editor" AND (PE2 OR PE3 OR PEmax OR PE5) AND pegRNA',
+    ]
+
+    all_pmids = set()
+    for q in queries:
+        pmids = search_pubmed(query=q, max_results=max_papers)
+        all_pmids.update(pmids)
+        time.sleep(0.5)
+
+    # Filter out existing
+    existing = {p.pmid for p in session.query(Paper).all()}
+    new_pmids = list(all_pmids - existing)[:max_papers]
+    console.print(f"Found {len(all_pmids)} total, {len(new_pmids)} new papers to process")
+
+    if not new_pmids:
+        console.print("[green]No new papers to process[/green]")
+        session.close()
+        return
+
+    # Fetch metadata
+    papers_data = fetch_paper_metadata(new_pmids)
+    console.print(f"Fetched metadata for {len(papers_data)} papers")
+
+    # Filter reviews
+    experimental = []
+    skipped = 0
+    for pd in papers_data:
+        if not pd.get("pmcid"):
+            skipped += 1
+            continue
+        if skip_reviews:
+            combined = ((pd.get("title") or "") + " " + (pd.get("abstract") or "")).lower()
+            is_review = any(kw in combined for kw in REVIEW_KEYWORDS)
+            has_exp = any(ei in combined for ei in EXPERIMENTAL_INDICATORS)
+            if is_review and not has_exp:
+                skipped += 1
+                continue
+        experimental.append(pd)
+
+    console.print(f"After filtering: {len(experimental)} experimental papers ({skipped} skipped)")
+
+    if dry_run:
+        for pd in experimental:
+            console.print(f"  [green]+[/green] {pd.get('pmid')} - {pd.get('title', '')[:70]}")
+        session.close()
+        return
+
+    # Process
+    progress_path = config.DATA_DIR / "batch_progress.json"
+    progress = {"processed": [], "failed": [], "entries_added": 0}
+
+    for i, pd in enumerate(experimental):
+        console.print(f"\n[bold][{i+1}/{len(experimental)}] {pd.get('title', '')[:60]}[/bold]")
+        paper, created = get_or_create_paper(session, **pd)
+        session.commit()
+
+        if not created and paper.extraction_status == "completed":
+            console.print(f"  [yellow]Already completed[/yellow]")
+            continue
+
+        try:
+            _process_single_paper(session, paper)
+            session.commit()
+            entry_count = session.query(
+                __import__("database.models", fromlist=["PegRNAEntry"]).PegRNAEntry
+            ).filter_by(paper_id=paper.id).count()
+            progress["processed"].append(pd.get("pmid"))
+            progress["entries_added"] += entry_count
+        except Exception as e:
+            console.print(f"  [red]Error: {e}[/red]")
+            progress["failed"].append(pd.get("pmid"))
+            session.rollback()
+
+        # Save progress
+        with open(progress_path, "w") as f:
+            json.dump(progress, f, indent=2)
+
+    console.print(f"\n[bold green]Batch complete![/bold green]")
+    console.print(f"Processed: {len(progress['processed'])}, Failed: {len(progress['failed'])}")
+    console.print(f"Total new entries: {progress['entries_added']}")
+
+    total = session.query(Paper).count()
+    total_entries = session.query(
+        __import__("database.models", fromlist=["PegRNAEntry"]).PegRNAEntry
+    ).count()
+    console.print(f"Database: {total} papers, {total_entries:,} entries")
+    session.close()
 
 
 if __name__ == "__main__":

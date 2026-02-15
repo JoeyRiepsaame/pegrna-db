@@ -147,6 +147,30 @@ class PegRNAExtracted(BaseModel):
             return "pegRNA"
         return v
 
+    @field_validator("target_organism", mode="before")
+    @classmethod
+    def normalize_organism(cls, v):
+        if v is None:
+            return v
+        v_str = _coerce_to_str(v)
+        if v_str is None:
+            return None
+        v_clean = v_str.strip().lower()
+        bad_values = {"epegrna", "ngrna", "pegrna", "sgrna", "nicking",
+                      "none", "n/a", "na", "-", ""}
+        if v_clean in bad_values:
+            return None
+        organism_map = {
+            "human": "Homo sapiens", "humans": "Homo sapiens",
+            "mouse": "Mus musculus", "mice": "Mus musculus",
+            "rat": "Rattus norvegicus", "zebrafish": "Danio rerio",
+            "rice": "Oryza sativa", "wheat": "Triticum aestivum",
+            "maize": "Zea mays", "corn": "Zea mays",
+            "drosophila": "Drosophila melanogaster",
+            "pig": "Sus scrofa", "rabbit": "Oryctolagus cuniculus",
+        }
+        return organism_map.get(v_clean, v_str.strip())
+
     @model_validator(mode="after")
     def infer_lengths(self):
         """Infer PBS/RTT lengths from sequences if not provided."""
