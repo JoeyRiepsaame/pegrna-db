@@ -10,6 +10,8 @@ __pycache__/
 *.so
 build/
 dist/
+.venv/
+venv/
 
 # Data (keep database, exclude raw papers)
 data/raw_papers/
