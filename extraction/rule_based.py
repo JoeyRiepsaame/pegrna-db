@@ -1,4 +1,5 @@
 """Rule-based extraction of pegRNA data from tables and text."""
+import ast
 import re
 from typing import Optional
 
@@ -11,6 +12,27 @@ from extraction.schemas import PegRNAExtracted
 
 console = Console()
 
+# Regex to strip orientation suffixes from column names
+_ORIENTATION_SUFFIX = re.compile(
+    r"\s*\(5['\u2032\u2019]?\s*[-\u2013\u2192to ]*\s*3['\u2032\u2019]?\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_col_name(name: str) -> str:
+    """Normalize a column name for pattern matching.
+
+    - Replace newlines with spaces
+    - Strip orientation suffixes like (5'-3'), (5′-3′), (5' to 3')
+    - Collapse multiple spaces
+    - Strip and lowercase
+    """
+    s = str(name)
+    s = s.replace("\n", " ").replace("\r", " ")
+    s = _ORIENTATION_SUFFIX.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
 
 def _to_python(val):
     """Convert pandas/numpy value to native Python type, NaN to None."""
@@ -19,6 +41,78 @@ def _to_python(val):
     if hasattr(val, 'item'):  # numpy scalar
         return val.item()
     return val
+
+
+def _detect_protobase_columns(df: pd.DataFrame) -> Optional[list[str]]:
+    """Detect protobase_1 through protobase_N columns for spacer reconstruction."""
+    cols = []
+    for i in range(1, 30):
+        candidates = [c for c in df.columns if str(c).lower().strip() == f"protobase_{i}"]
+        if candidates:
+            cols.append(candidates[0])
+        else:
+            break
+    return cols if len(cols) >= 15 else None
+
+
+def _reconstruct_spacer_from_protobases(row, protobase_cols: list[str]) -> Optional[str]:
+    """Concatenate individual protobase columns into a spacer sequence."""
+    bases = []
+    for col in protobase_cols:
+        val = row.get(col)
+        if pd.notna(val):
+            b = str(val).strip().upper()
+            if len(b) == 1 and b in "ACGT":
+                bases.append(b)
+            else:
+                return None
+        else:
+            return None
+    return "".join(bases) if bases else None
+
+
+def _extract_spacer_from_wide_target(row, df_columns) -> Optional[str]:
+    """Extract spacer from wide_initial_target using protospacerlocation_only_initial."""
+    # Find the relevant columns
+    wide_col = None
+    loc_col = None
+    for c in df_columns:
+        cl = str(c).lower().strip()
+        if cl == "wide_initial_target":
+            wide_col = c
+        elif cl == "protospacerlocation_only_initial":
+            loc_col = c
+
+    if not wide_col or not loc_col:
+        return None
+
+    wide_val = row.get(wide_col)
+    loc_val = row.get(loc_col)
+
+    if pd.isna(wide_val) or pd.isna(loc_val):
+        return None
+
+    wide_seq = str(wide_val).strip().upper()
+
+    # Parse location: could be "[10, 29]" or a list
+    try:
+        if isinstance(loc_val, str):
+            loc = ast.literal_eval(loc_val)
+        elif isinstance(loc_val, (list, tuple)):
+            loc = list(loc_val)
+        else:
+            return None
+
+        if isinstance(loc, list) and len(loc) == 2:
+            start, end = int(loc[0]), int(loc[1])
+            if 0 <= start < end <= len(wide_seq):
+                spacer = wide_seq[start:end]
+                if re.match(r"^[ACGT]+$", spacer) and 15 <= len(spacer) <= 25:
+                    return spacer
+    except (ValueError, TypeError, SyntaxError):
+        pass
+
+    return None
 
 
 def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
@@ -33,6 +127,19 @@ def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
         return []
 
     console.print(f"Column mapping: {col_mapping}")
+
+    # Detect protobase columns for spacer reconstruction (PRIDICT-style)
+    protobase_cols = _detect_protobase_columns(df)
+    has_wide_target = any(
+        str(c).lower().strip() == "wide_initial_target" for c in df.columns
+    )
+
+    if protobase_cols:
+        console.print(
+            f"[cyan]Detected {len(protobase_cols)} protobase columns for spacer reconstruction[/cyan]"
+        )
+    if has_wide_target:
+        console.print("[cyan]Detected wide_initial_target for spacer extraction[/cyan]")
 
     # Find the description/name column (first column, often unnamed or has a figure reference)
     desc_col = _find_description_column(df, col_mapping)
@@ -58,6 +165,20 @@ def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
                 val = row.get(source_col)
                 if pd.notna(val):
                     entry_data[target_field] = _to_python(val)
+
+            # If no spacer from normal mapping, try protobase reconstruction
+            if "spacer_sequence" not in entry_data or not entry_data.get("spacer_sequence"):
+                if protobase_cols:
+                    spacer = _reconstruct_spacer_from_protobases(row, protobase_cols)
+                    if spacer:
+                        entry_data["spacer_sequence"] = spacer
+
+            # If still no spacer, try wide_initial_target extraction
+            if "spacer_sequence" not in entry_data or not entry_data.get("spacer_sequence"):
+                if has_wide_target:
+                    spacer = _extract_spacer_from_wide_target(row, df.columns)
+                    if spacer:
+                        entry_data["spacer_sequence"] = spacer
 
             # Parse the description column for name, gene, and type info
             if desc_col:
@@ -226,10 +347,14 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
 
     Returns dict mapping target_field -> source_column_name.
     Prefers exact matches, then substring matches, skipping length/count columns
-    when mapping sequence fields.
+    when mapping sequence fields. Normalizes column names by stripping orientation
+    suffixes like (5'-3') and collapsing whitespace/newlines.
     """
     mapping = {}
+
+    # Build two lookup dicts: original lowered, and normalized
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
+    cols_normalized = {_normalize_col_name(c): c for c in df.columns}
 
     field_patterns = {
         "spacer_sequence": config.SPACER_PATTERNS,
@@ -247,23 +372,25 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
     direct_mappings = {
         "pegrna_type": ["pegrna_type", "peg_type", "grna_type", "type"],
         "entry_name": ["name", "id", "pegrna_name", "pegrna_id", "guide_name",
-                        "finalname"],
+                        "finalname", "perna name", "pegrna name"],
         "pbs_length": ["pbslength", "pbs_length", "pbs_len", "pbs length"],
         "rtt_length": ["rtlength", "rtt_length", "rtt_len", "rtt length",
                         "rt_length"],
         "target_organism": ["organism", "species"],
         "target_locus": ["locus", "position", "genomic_position", "coordinates"],
         "edit_description": ["edit_description", "edit", "mutation", "variant",
-                             "phenotype"],
+                             "phenotype", "edit made"],
         "intended_mutation": ["intended_mutation", "desired_edit", "desired_mutation",
                               "referenceallele", "alternateallele"],
         "product_purity": ["purity", "product_purity", "correct_edit_pct"],
         "indel_frequency": ["indel", "indel_freq", "indel_frequency", "indels",
                             "averageindel"],
         "delivery_method": ["delivery", "delivery_method", "transfection"],
-        "nicking_sgrna_seq": ["nicking", "nick_sgrna", "ngsrna", "pe3_nick"],
+        "nicking_sgrna_seq": ["nicking", "nick_sgrna", "ngsrna", "pe3_nick",
+                              "nicking guide spacer"],
         "three_prime_extension": ["3_prime", "3prime", "3' motif",
-                                   "motif", "evopreq", "mpknot", "tevopreq"],
+                                   "motif", "evopreq", "mpknot", "tevopreq",
+                                   "3' structural motif"],
         "linker_sequence": ["linker", "linker_sequence"],
         "full_sequence": ["full_sequence", "full_seq", "pegrna_sequence",
                          "pegrna_seq", "full length", "pegrna_oligo",
@@ -278,7 +405,7 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
 
     all_patterns = {**field_patterns, **direct_mappings}
 
-    # Pass 1: exact matches (col_lower == pattern)
+    # Pass 1: exact matches on original lowered names
     for field, patterns in all_patterns.items():
         if field in mapping:
             continue
@@ -287,7 +414,16 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
                 mapping[field] = cols_lower[pat]
                 break
 
-    # Pass 2: substring matches (pattern in col_lower)
+    # Pass 2: exact matches on normalized names (strips suffixes)
+    for field, patterns in all_patterns.items():
+        if field in mapping:
+            continue
+        for pat in patterns:
+            if pat in cols_normalized:
+                mapping[field] = cols_normalized[pat]
+                break
+
+    # Pass 3: substring matches on original lowered names
     for field, patterns in all_patterns.items():
         if field in mapping:
             continue
@@ -297,6 +433,21 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
                 if pat in col_lower and field not in mapping:
                     # Skip length/count columns when looking for sequences
                     if is_seq_field and any(kw in col_lower for kw in length_keywords):
+                        continue
+                    mapping[field] = col_original
+                    break
+            if field in mapping:
+                break
+
+    # Pass 4: substring matches on normalized names
+    for field, patterns in all_patterns.items():
+        if field in mapping:
+            continue
+        is_seq_field = field.endswith("_sequence") or field == "spacer_sequence"
+        for pat in patterns:
+            for col_norm, col_original in cols_normalized.items():
+                if pat in col_norm and field not in mapping:
+                    if is_seq_field and any(kw in col_norm for kw in length_keywords):
                         continue
                     mapping[field] = col_original
                     break

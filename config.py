@@ -53,11 +53,13 @@ LLM_MAX_TOKENS = 8192
 # Column name patterns for rule-based extraction (case-insensitive)
 # Patterns are tried in order; put most specific first
 SPACER_PATTERNS = [
-    "spacer_sequence", "spacer", "guide_sequence", "guide",
+    "spacer_sequence", "spacer sequence", "spacer", "guide_sequence", "guide",
     "protospacer", "protospacer_sequence", "protospacer_guide",
     "target_sequence", "target site sequence",
     "sgrna", "grna", "grna_sequence",
     "spacer_seq", "guide_seq", "pegrna_spacer",
+    "prime_editing_pegrna_spacer_seq", "prime_editing_pegRNA_spacer_seq",
+    "pegrna spacer", "pegRNA spacer",
     "n20", "20mer", "crrna",
 ]
 PBS_PATTERNS = [
@@ -77,6 +79,8 @@ EXTENSION_PATTERNS = [
     "extension_seq", "3' extension", "3'-extension", "extension sequence",
     "3' extension sequence", "3'-extension sequence",
     "pbs-rtt", "rtt+pbs", "rt+pbs", "pbs+rtt",
+    "prime_editing_pegrna_extension_seq", "prime_editing_pegRNA_extension_seq",
+    "pegrna 3' extension", "pegRNA 3' extension",
 ]
 EFFICIENCY_PATTERNS = [
     "editing_efficiency", "efficiency", "edit_eff", "pe_efficiency",
