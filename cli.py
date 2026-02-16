@@ -286,7 +286,7 @@ def serve(
 ):
     """Launch the Streamlit web app."""
     import subprocess
-    webapp_path = Path(__file__).parent / "webapp" / "app.py"
+    webapp_path = Path(__file__).parent / "app.py"
     subprocess.run(
         ["streamlit", "run", str(webapp_path), "--server.port", str(port)],
         cwd=str(Path(__file__).parent),
@@ -558,6 +558,54 @@ def batch(
         __import__("database.models", fromlist=["PegRNAEntry"]).PegRNAEntry
     ).count()
     console.print(f"Database: {total} papers, {total_entries:,} entries")
+    session.close()
+
+
+@app.command(name="clinvar-update")
+def clinvar_update(
+    download: bool = typer.Option(True, "--download/--no-download", help="Download ClinVar data"),
+    do_match: bool = typer.Option(True, "--match/--no-match", help="Run pegRNA-ClinVar matching"),
+    pathogenic_only: bool = typer.Option(True, "--pathogenic-only/--all-significance",
+                                         help="Only match pathogenic/likely pathogenic variants"),
+):
+    """Download ClinVar data, import variants, and match to pegRNA entries."""
+    from database.clinvar import download_clinvar, import_clinvar_variants, match_pegrna_to_clinvar
+
+    session = get_session()
+
+    if download:
+        filepath = download_clinvar(config.CLINVAR_DATA_DIR, config.CLINVAR_FTP_URL)
+        console.print(f"\n[bold]Importing ClinVar variants...[/bold]")
+        imported = import_clinvar_variants(session, filepath)
+        console.print(f"Imported {imported:,} variants")
+    else:
+        # Check if data file exists
+        filepath = config.CLINVAR_DATA_DIR / "variant_summary.txt.gz"
+        if filepath.exists():
+            console.print(f"[bold]Importing ClinVar variants from existing file...[/bold]")
+            imported = import_clinvar_variants(session, filepath)
+            console.print(f"Imported {imported:,} variants")
+        else:
+            console.print("[yellow]No ClinVar data file found. Run with --download first.[/yellow]")
+
+    if do_match:
+        console.print(f"\n[bold]Matching pegRNA entries to ClinVar variants...[/bold]")
+        matches = match_pegrna_to_clinvar(session, pathogenic_only=pathogenic_only)
+        console.print(f"Created {matches:,} matches")
+
+    # Summary
+    from database.models import ClinVarVariant, PegRNAClinVarMatch
+    from sqlalchemy import func, distinct
+
+    cv_count = session.query(ClinVarVariant).count()
+    match_count = session.query(PegRNAClinVarMatch).count()
+    matched_entries = session.query(func.count(distinct(PegRNAClinVarMatch.pegrna_entry_id))).scalar()
+
+    console.print(f"\n[bold green]ClinVar Summary:[/bold green]")
+    console.print(f"  Variants in DB: {cv_count:,}")
+    console.print(f"  Total matches: {match_count:,}")
+    console.print(f"  pegRNA entries with matches: {matched_entries:,}")
+
     session.close()
 
 

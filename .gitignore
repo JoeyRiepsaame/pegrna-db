@@ -13,9 +13,10 @@ dist/
 .venv/
 venv/
 
-# Data (keep database, exclude raw papers)
+# Data (keep database, exclude raw papers and ClinVar downloads)
 data/raw_papers/
 data/pegrna_export.csv
+data/clinvar/
 *.pdf
 *.xml
 

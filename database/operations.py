@@ -96,10 +96,12 @@ def search_entries(
     max_efficiency: Optional[float] = None,
     target_organism: Optional[str] = None,
     validated_only: bool = False,
+    sort_by: Optional[str] = None,
+    sort_desc: bool = False,
     limit: int = 100,
     offset: int = 0,
 ) -> list[PegRNAEntry]:
-    """Search pegRNA entries with filters."""
+    """Search pegRNA entries with filters and sorting."""
     query = session.query(PegRNAEntry)
 
     if target_gene:
@@ -120,6 +122,19 @@ def search_entries(
         query = query.filter(PegRNAEntry.target_organism.ilike(f"%{target_organism}%"))
     if validated_only:
         query = query.filter(PegRNAEntry.validated.is_(True))
+
+    # Sorting
+    sort_map = {
+        "Efficiency": PegRNAEntry.editing_efficiency,
+        "Gene": PegRNAEntry.target_gene,
+        "Edit Type": PegRNAEntry.edit_type,
+        "PE Version": PegRNAEntry.prime_editor,
+    }
+    if sort_by and sort_by in sort_map:
+        col = sort_map[sort_by]
+        query = query.order_by(col.desc().nullslast() if sort_desc else col.asc().nullsfirst())
+    else:
+        query = query.order_by(PegRNAEntry.id)
 
     return query.offset(offset).limit(limit).all()
 

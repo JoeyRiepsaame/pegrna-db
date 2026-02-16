@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import numpy as np
 
 import config
 from database.models import init_db, Paper, PegRNAEntry
@@ -30,6 +31,26 @@ def get_session():
     return Session()
 
 
+@st.cache_data(ttl=300)
+def get_distinct_pe_versions():
+    """Get distinct prime editor values from DB for dropdown."""
+    from sqlalchemy import distinct
+    s = get_session()
+    values = s.query(distinct(PegRNAEntry.prime_editor)).filter(
+        PegRNAEntry.prime_editor.isnot(None)
+    ).all()
+    return sorted([v[0] for v in values if v[0]])
+
+
+def has_clinvar_data(session):
+    """Check if ClinVar data has been loaded."""
+    try:
+        from database.models import ClinVarVariant
+        return session.query(ClinVarVariant).limit(1).first() is not None
+    except Exception:
+        return False
+
+
 session = get_session()
 
 # --- Sidebar Navigation ---
@@ -48,30 +69,55 @@ page = st.sidebar.radio(
 if page == "Search & Browse":
     st.title("Search (e)pegRNA Entries")
 
-    # Filters
+    # Clear filters button
+    if st.button("Clear Filters"):
+        for key in list(st.session_state.keys()):
+            if key.startswith("filter_"):
+                del st.session_state[key]
+        st.rerun()
+
+    # Filters - Row 1
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        gene_filter = st.text_input("Target Gene", placeholder="e.g., HEK3, FANCF")
+        gene_filter = st.text_input("Target Gene", placeholder="e.g., HEK3, FANCF", key="filter_gene")
     with col2:
         edit_type_filter = st.selectbox(
             "Edit Type",
             ["All", "substitution", "insertion", "deletion"],
+            key="filter_edit_type",
         )
     with col3:
-        pe_filter = st.text_input("Prime Editor", placeholder="e.g., PE2, PE3, PE7")
+        pe_options = ["All"] + get_distinct_pe_versions()
+        pe_filter = st.selectbox("Prime Editor", pe_options, key="filter_pe")
     with col4:
-        cell_filter = st.text_input("Cell Type", placeholder="e.g., HEK293T, K562")
+        cell_filter = st.text_input("Cell Type", placeholder="e.g., HEK293T, K562", key="filter_cell")
 
-    col5, col6, col7 = st.columns(3)
+    # Filters - Row 2
+    col5, col6, col7, col8 = st.columns(4)
     with col5:
-        pegrna_type_filter = st.selectbox("pegRNA Type", ["All", "pegRNA", "epegRNA"])
+        pegrna_type_filter = st.selectbox("pegRNA Type", ["All", "pegRNA", "epegRNA"], key="filter_type")
     with col6:
-        min_eff = st.number_input("Min Efficiency (%)", min_value=0.0, max_value=100.0, value=0.0)
+        min_eff = st.number_input("Min Efficiency (%)", min_value=0.0, max_value=100.0, value=0.0, key="filter_min_eff")
     with col7:
-        max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0)
+        max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0, key="filter_max_eff")
+    with col8:
+        organism_filter = st.text_input("Organism", placeholder="e.g., Human, Mouse", key="filter_organism")
 
-    validated_only = st.checkbox("Validated entries only")
+    # Row 3: validated + ClinVar filter + sorting
+    col_v, col_cv, col_sort, col_order = st.columns(4)
+    with col_v:
+        validated_only = st.checkbox("Validated entries only", key="filter_validated")
+    with col_cv:
+        clinvar_filter_options = ["All"]
+        _has_clinvar = has_clinvar_data(session)
+        if _has_clinvar:
+            clinvar_filter_options += ["Has ClinVar match", "Pathogenic match", "No ClinVar match"]
+        clinvar_filter = st.selectbox("ClinVar Match", clinvar_filter_options, key="filter_clinvar")
+    with col_sort:
+        sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version"], key="filter_sort")
+    with col_order:
+        sort_desc = st.checkbox("Descending", value=True, key="filter_sort_desc")
 
     # --- Sequence Search ---
     with st.expander("Sequence Search (find similar pegRNAs by DNA sequence)", expanded=False):
@@ -129,14 +175,14 @@ if page == "Search & Browse":
     with col_page2:
         page_num = st.number_input("Page", min_value=1, value=1, step=1)
 
-    # Count total matching entries
+    # Build count query with all filters
     from database.models import PegRNAEntry as _PE
     count_query = session.query(_PE)
     if gene_filter:
         count_query = count_query.filter(_PE.target_gene.ilike(f"%{gene_filter}%"))
     if edit_type_filter != "All":
         count_query = count_query.filter(_PE.edit_type.ilike(f"%{edit_type_filter}%"))
-    if pe_filter:
+    if pe_filter != "All":
         count_query = count_query.filter(_PE.prime_editor.ilike(f"%{pe_filter}%"))
     if cell_filter:
         count_query = count_query.filter(_PE.cell_type.ilike(f"%{cell_filter}%"))
@@ -146,23 +192,47 @@ if page == "Search & Browse":
         count_query = count_query.filter(_PE.editing_efficiency >= min_eff)
     if max_eff < 100:
         count_query = count_query.filter(_PE.editing_efficiency <= max_eff)
+    if organism_filter:
+        count_query = count_query.filter(_PE.target_organism.ilike(f"%{organism_filter}%"))
     if validated_only:
         count_query = count_query.filter(_PE.validated.is_(True))
+
+    # ClinVar filter on count query
+    if _has_clinvar and clinvar_filter != "All":
+        from database.models import PegRNAClinVarMatch, ClinVarVariant
+        from sqlalchemy import exists
+        match_subq = session.query(PegRNAClinVarMatch.pegrna_entry_id).subquery()
+        if clinvar_filter == "Has ClinVar match":
+            count_query = count_query.filter(_PE.id.in_(session.query(PegRNAClinVarMatch.pegrna_entry_id)))
+        elif clinvar_filter == "Pathogenic match":
+            pathogenic_subq = (
+                session.query(PegRNAClinVarMatch.pegrna_entry_id)
+                .join(ClinVarVariant, PegRNAClinVarMatch.clinvar_variant_id == ClinVarVariant.id)
+                .filter(ClinVarVariant.clinical_significance.ilike("%pathogenic%"))
+                .subquery()
+            )
+            count_query = count_query.filter(_PE.id.in_(pathogenic_subq))
+        elif clinvar_filter == "No ClinVar match":
+            count_query = count_query.filter(~_PE.id.in_(session.query(PegRNAClinVarMatch.pegrna_entry_id)))
+
     total_count = count_query.count()
     total_pages = max(1, (total_count + page_size - 1) // page_size)
 
-    # Query
+    # Query results
     offset = (page_num - 1) * page_size
     results = search_entries(
         session,
         target_gene=gene_filter or None,
         edit_type=edit_type_filter if edit_type_filter != "All" else None,
-        prime_editor=pe_filter or None,
+        prime_editor=pe_filter if pe_filter != "All" else None,
         cell_type=cell_filter or None,
         pegrna_type=pegrna_type_filter if pegrna_type_filter != "All" else None,
         min_efficiency=min_eff if min_eff > 0 else None,
         max_efficiency=max_eff if max_eff < 100 else None,
+        target_organism=organism_filter or None,
         validated_only=validated_only,
+        sort_by=sort_by,
+        sort_desc=sort_desc,
         limit=page_size,
         offset=offset,
     )
@@ -170,10 +240,24 @@ if page == "Search & Browse":
     st.markdown(f"**{total_count:,} entries found** (showing {offset+1}-{min(offset+page_size, total_count)} of {total_count:,}, page {page_num}/{total_pages})")
 
     if results:
+        # Pre-fetch ClinVar match counts for displayed entries
+        clinvar_counts = {}
+        if _has_clinvar:
+            from database.models import PegRNAClinVarMatch
+            from sqlalchemy import func
+            entry_ids = [e.id for e in results]
+            counts = (
+                session.query(PegRNAClinVarMatch.pegrna_entry_id, func.count(PegRNAClinVarMatch.id))
+                .filter(PegRNAClinVarMatch.pegrna_entry_id.in_(entry_ids))
+                .group_by(PegRNAClinVarMatch.pegrna_entry_id)
+                .all()
+            )
+            clinvar_counts = dict(counts)
+
         # Build display dataframe
         rows = []
         for e in results:
-            rows.append({
+            row = {
                 "ID": e.id,
                 "Name": e.entry_name or "-",
                 "Type": e.pegrna_type or "-",
@@ -185,10 +269,14 @@ if page == "Search & Browse":
                 "Edit": e.edit_type or "-",
                 "PE": e.prime_editor or "-",
                 "Cell": e.cell_type or "-",
+                "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
                 "Confidence": f"{e.confidence_score:.2f}" if e.confidence_score else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
-            })
+            }
+            if _has_clinvar:
+                row["ClinVar"] = clinvar_counts.get(e.id, 0)
+            rows.append(row)
 
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, height=600)
@@ -224,6 +312,34 @@ if page == "Search & Browse":
                         st.write(f"Product Purity: {entry.product_purity or 'N/A'}%")
                         st.write(f"Indel Frequency: {entry.indel_frequency or 'N/A'}%")
 
+                    # ClinVar matches for this entry
+                    if _has_clinvar and hasattr(entry, 'clinvar_matches') and entry.clinvar_matches:
+                        st.markdown("**ClinVar Matches**")
+                        cv_rows = []
+                        for m in entry.clinvar_matches[:10]:
+                            cv = m.clinvar_variant
+                            sig = cv.clinical_significance or "Unknown"
+                            cv_rows.append({
+                                "Variant": cv.name or f"{cv.gene_symbol} {cv.hgvs_cdna or ''}",
+                                "Significance": sig,
+                                "Condition": (cv.phenotype_list or "N/A")[:80],
+                                "Confidence": f"{m.match_confidence:.2f}",
+                                "Match Type": m.match_type,
+                                "Link": f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{cv.variation_id}/"
+                            })
+                        cv_df = pd.DataFrame(cv_rows)
+
+                        # Color-code significance
+                        def color_sig(val):
+                            if "pathogenic" in val.lower() and "benign" not in val.lower():
+                                return "color: #ff4444"
+                            elif "benign" in val.lower():
+                                return "color: #44aa44"
+                            return "color: #888888"
+
+                        styled = cv_df.style.map(color_sig, subset=["Significance"])
+                        st.dataframe(styled, use_container_width=True)
+
                     if entry.paper:
                         st.markdown("**Source**")
                         st.write(f"{entry.paper.title}")
@@ -249,7 +365,7 @@ elif page == "Statistics":
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Papers", stats["total_papers"])
     col2.metric("Processed Papers", stats["completed_papers"])
-    col3.metric("Total Entries", stats["total_entries"])
+    col3.metric("Total Entries", f"{stats['total_entries']:,}")
     col4.metric("Validated Entries", stats["validated_entries"])
 
     col5, col6, col7 = st.columns(3)
@@ -257,11 +373,11 @@ elif page == "Statistics":
     col6.metric("Unique Cell Types", stats["unique_cell_types"])
     col7.metric("Unique Organisms", stats["unique_organisms"])
 
-    # Charts - using SQL aggregations for performance (264k+ entries)
+    # Charts - using SQL aggregations for performance (600k+ entries)
     if stats["total_entries"] > 0:
         from sqlalchemy import func, distinct, case
 
-        # Edit type distribution
+        # --- Edit type distribution ---
         st.subheader("Distribution of Edit Types")
         edit_type_counts = (
             session.query(PegRNAEntry.edit_type, func.count(PegRNAEntry.id))
@@ -274,7 +390,7 @@ elif page == "Statistics":
             fig = px.pie(et_df, names="edit_type", values="count", title="Edit Types")
             st.plotly_chart(fig, use_container_width=True)
 
-        # Efficiency distribution - sample for histogram
+        # --- Efficiency distribution ---
         st.subheader("Editing Efficiency Distribution")
         eff_rows = (
             session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
@@ -291,7 +407,7 @@ elif page == "Statistics":
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # Top genes
+        # --- Top genes ---
         st.subheader("Top Target Genes")
         gene_counts = (
             session.query(PegRNAEntry.target_gene, func.count(PegRNAEntry.id).label("count"))
@@ -306,7 +422,7 @@ elif page == "Statistics":
             fig = px.bar(gene_df, x="Gene", y="Count", title="Top 20 Target Genes")
             st.plotly_chart(fig, use_container_width=True)
 
-        # Prime editor usage
+        # --- Prime editor usage ---
         st.subheader("Prime Editor Usage")
         pe_counts = (
             session.query(PegRNAEntry.prime_editor, func.count(PegRNAEntry.id).label("count"))
@@ -321,7 +437,7 @@ elif page == "Statistics":
             fig = px.bar(pe_df, x="Editor", y="Count", title="Prime Editor Usage")
             st.plotly_chart(fig, use_container_width=True)
 
-        # pegRNA vs epegRNA efficiency - use aggregated stats
+        # --- pegRNA vs epegRNA efficiency ---
         st.subheader("pegRNA vs epegRNA Efficiency")
         type_eff_rows = (
             session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
@@ -341,7 +457,7 @@ elif page == "Statistics":
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # Papers by year
+        # --- Papers by year ---
         st.subheader("Papers by Year")
         year_counts = (
             session.query(Paper.year, func.count(Paper.id).label("count"))
@@ -354,6 +470,229 @@ elif page == "Statistics":
             year_df = pd.DataFrame(year_counts, columns=["Year", "Papers"])
             fig = px.bar(year_df, x="Year", y="Papers", title="Completed Papers by Year")
             st.plotly_chart(fig, use_container_width=True)
+
+        # ====================
+        # NEW CHARTS
+        # ====================
+
+        # --- Delivery Methods ---
+        st.subheader("Delivery Methods")
+        delivery_counts = (
+            session.query(PegRNAEntry.delivery_method, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.delivery_method.isnot(None))
+            .group_by(PegRNAEntry.delivery_method)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(15)
+            .all()
+        )
+        if delivery_counts:
+            del_df = pd.DataFrame(delivery_counts, columns=["Method", "Count"])
+            fig = px.bar(del_df, x="Method", y="Count", title="Top 15 Delivery Methods")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # --- Organism Distribution ---
+        st.subheader("Organism Distribution")
+        org_counts = (
+            session.query(PegRNAEntry.target_organism, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.target_organism.isnot(None))
+            .group_by(PegRNAEntry.target_organism)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(15)
+            .all()
+        )
+        if org_counts:
+            org_df = pd.DataFrame(org_counts, columns=["Organism", "Count"])
+            fig = px.bar(org_df, x="Organism", y="Count", title="Top 15 Target Organisms")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # --- PBS Length Distribution ---
+        st.subheader("PBS Length Distribution")
+        pbs_rows = (
+            session.query(PegRNAEntry.pbs_length)
+            .filter(PegRNAEntry.pbs_length.isnot(None), PegRNAEntry.pbs_length > 0, PegRNAEntry.pbs_length < 50)
+            .limit(100000)
+            .all()
+        )
+        if pbs_rows:
+            pbs_df = pd.DataFrame(pbs_rows, columns=["pbs_length"])
+            fig = px.histogram(
+                pbs_df, x="pbs_length", nbins=30,
+                title=f"PBS Length Distribution ({len(pbs_rows):,} entries)",
+                labels={"pbs_length": "PBS Length (nt)"},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # --- RTT Length Distribution ---
+        st.subheader("RTT Length Distribution")
+        rtt_rows = (
+            session.query(PegRNAEntry.rtt_length)
+            .filter(PegRNAEntry.rtt_length.isnot(None), PegRNAEntry.rtt_length > 0, PegRNAEntry.rtt_length < 100)
+            .limit(100000)
+            .all()
+        )
+        if rtt_rows:
+            rtt_df = pd.DataFrame(rtt_rows, columns=["rtt_length"])
+            fig = px.histogram(
+                rtt_df, x="rtt_length", nbins=40,
+                title=f"RTT Length Distribution ({len(rtt_rows):,} entries)",
+                labels={"rtt_length": "RTT Length (nt)"},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # --- Data Completeness Dashboard ---
+        st.subheader("Data Completeness")
+        total = stats["total_entries"]
+        fields = [
+            ("spacer_sequence", "Spacer"),
+            ("pbs_sequence", "PBS Seq"),
+            ("pbs_length", "PBS Length"),
+            ("rtt_sequence", "RTT Seq"),
+            ("rtt_length", "RTT Length"),
+            ("full_sequence", "Full Seq"),
+            ("target_gene", "Gene"),
+            ("target_organism", "Organism"),
+            ("edit_type", "Edit Type"),
+            ("prime_editor", "PE Version"),
+            ("cell_type", "Cell Type"),
+            ("delivery_method", "Delivery"),
+            ("editing_efficiency", "Efficiency"),
+            ("nicking_sgrna_seq", "Nick sgRNA"),
+            ("three_prime_extension", "3' Extension"),
+        ]
+        completeness = []
+        for col_name, label in fields:
+            col_attr = getattr(PegRNAEntry, col_name)
+            non_null = session.query(func.count(PegRNAEntry.id)).filter(col_attr.isnot(None)).scalar()
+            pct = (non_null / total * 100) if total > 0 else 0
+            completeness.append({"Field": label, "Completeness (%)": round(pct, 1)})
+
+        comp_df = pd.DataFrame(completeness)
+        # Color: red (<25%), orange (<50%), yellow (<75%), green (>=75%)
+        colors = []
+        for pct in comp_df["Completeness (%)"]:
+            if pct < 25:
+                colors.append("#ff4444")
+            elif pct < 50:
+                colors.append("#ff8800")
+            elif pct < 75:
+                colors.append("#ffcc00")
+            else:
+                colors.append("#44aa44")
+
+        fig = go.Figure(go.Bar(
+            x=comp_df["Field"], y=comp_df["Completeness (%)"],
+            marker_color=colors,
+            text=[f"{v}%" for v in comp_df["Completeness (%)"]],
+            textposition="outside",
+        ))
+        fig.update_layout(title="Data Field Completeness (%)", yaxis_range=[0, 105])
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- Gene × Cell Type Heatmap ---
+        st.subheader("Gene × Cell Type Heatmap")
+        # Get top 10 genes and top 10 cell types
+        top_genes = (
+            session.query(PegRNAEntry.target_gene)
+            .filter(PegRNAEntry.target_gene.isnot(None))
+            .group_by(PegRNAEntry.target_gene)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(10)
+            .all()
+        )
+        top_cells = (
+            session.query(PegRNAEntry.cell_type)
+            .filter(PegRNAEntry.cell_type.isnot(None))
+            .group_by(PegRNAEntry.cell_type)
+            .order_by(func.count(PegRNAEntry.id).desc())
+            .limit(10)
+            .all()
+        )
+        if top_genes and top_cells:
+            gene_names = [g[0] for g in top_genes]
+            cell_names = [c[0] for c in top_cells]
+
+            heatmap_data = (
+                session.query(
+                    PegRNAEntry.target_gene,
+                    PegRNAEntry.cell_type,
+                    func.count(PegRNAEntry.id),
+                )
+                .filter(
+                    PegRNAEntry.target_gene.in_(gene_names),
+                    PegRNAEntry.cell_type.in_(cell_names),
+                )
+                .group_by(PegRNAEntry.target_gene, PegRNAEntry.cell_type)
+                .all()
+            )
+
+            # Build matrix
+            matrix = pd.DataFrame(0, index=gene_names, columns=cell_names)
+            for gene, cell, count in heatmap_data:
+                if gene in matrix.index and cell in matrix.columns:
+                    matrix.loc[gene, cell] = count
+
+            fig = px.imshow(
+                matrix.values,
+                x=matrix.columns.tolist(),
+                y=matrix.index.tolist(),
+                title="Entry Count: Top 10 Genes × Top 10 Cell Types",
+                labels=dict(x="Cell Type", y="Gene", color="Entries"),
+                color_continuous_scale="YlOrRd",
+                aspect="auto",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ====================
+        # ClinVar Statistics (only if data loaded)
+        # ====================
+        if has_clinvar_data(session):
+            st.markdown("---")
+            st.header("ClinVar Clinical Variant Data")
+
+            from database.models import ClinVarVariant, PegRNAClinVarMatch
+
+            cv_total = session.query(ClinVarVariant).count()
+            matched_entries = session.query(func.count(distinct(PegRNAClinVarMatch.pegrna_entry_id))).scalar()
+            matched_variants = session.query(func.count(distinct(PegRNAClinVarMatch.clinvar_variant_id))).scalar()
+
+            cv1, cv2, cv3 = st.columns(3)
+            cv1.metric("ClinVar Variants", f"{cv_total:,}")
+            cv2.metric("Entries with ClinVar Match", f"{matched_entries:,}")
+            cv3.metric("Matched Variants", f"{matched_variants:,}")
+
+            # Clinical significance breakdown
+            st.subheader("Clinical Significance of Matched Variants")
+            sig_counts = (
+                session.query(ClinVarVariant.clinical_significance, func.count(ClinVarVariant.id))
+                .join(PegRNAClinVarMatch, PegRNAClinVarMatch.clinvar_variant_id == ClinVarVariant.id)
+                .group_by(ClinVarVariant.clinical_significance)
+                .order_by(func.count(ClinVarVariant.id).desc())
+                .limit(10)
+                .all()
+            )
+            if sig_counts:
+                sig_df = pd.DataFrame(sig_counts, columns=["Significance", "Count"])
+                fig = px.bar(sig_df, x="Significance", y="Count",
+                             title="Clinical Significance of Matched ClinVar Variants")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Top genes with pathogenic matches
+            st.subheader("Top Genes with Pathogenic Variant Matches")
+            patho_gene_counts = (
+                session.query(PegRNAEntry.target_gene, func.count(distinct(PegRNAClinVarMatch.clinvar_variant_id)))
+                .join(PegRNAClinVarMatch, PegRNAClinVarMatch.pegrna_entry_id == PegRNAEntry.id)
+                .join(ClinVarVariant, PegRNAClinVarMatch.clinvar_variant_id == ClinVarVariant.id)
+                .filter(ClinVarVariant.clinical_significance.ilike("%pathogenic%"))
+                .group_by(PegRNAEntry.target_gene)
+                .order_by(func.count(distinct(PegRNAClinVarMatch.clinvar_variant_id)).desc())
+                .limit(15)
+                .all()
+            )
+            if patho_gene_counts:
+                pg_df = pd.DataFrame(patho_gene_counts, columns=["Gene", "Pathogenic Variants"])
+                fig = px.bar(pg_df, x="Gene", y="Pathogenic Variants",
+                             title="Genes with Most Pathogenic ClinVar Variant Matches")
+                st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================
@@ -560,48 +899,42 @@ elif page == "Export":
     st.title("Export Database")
 
     export_format = st.selectbox("Format", ["CSV", "JSON"])
-    validated_only = st.checkbox("Validated entries only", value=False)
+    validated_export = st.checkbox("Validated entries only", value=False, key="export_validated")
 
-    entries = session.query(PegRNAEntry).all()
-    if validated_only:
-        entries = [e for e in entries if e.validated]
+    # Count entries without loading them all
+    from sqlalchemy import func as _func
+    if validated_export:
+        entry_count = session.query(_func.count(PegRNAEntry.id)).filter(PegRNAEntry.validated.is_(True)).scalar()
+    else:
+        entry_count = session.query(_func.count(PegRNAEntry.id)).scalar()
 
-    st.write(f"**{len(entries)} entries** to export")
+    st.write(f"**{entry_count:,} entries** to export")
 
-    if entries and st.button("Generate Export"):
-        rows = []
-        for e in entries:
-            rows.append({
-                "entry_name": e.entry_name,
-                "pegrna_type": e.pegrna_type,
-                "spacer_sequence": e.spacer_sequence,
-                "pbs_sequence": e.pbs_sequence,
-                "pbs_length": e.pbs_length,
-                "rtt_sequence": e.rtt_sequence,
-                "rtt_length": e.rtt_length,
-                "three_prime_extension": e.three_prime_extension,
-                "full_sequence": e.full_sequence,
-                "nicking_sgrna_seq": e.nicking_sgrna_seq,
-                "target_gene": e.target_gene,
-                "target_locus": e.target_locus,
-                "target_organism": e.target_organism,
-                "edit_type": e.edit_type,
-                "edit_description": e.edit_description,
-                "intended_mutation": e.intended_mutation,
-                "prime_editor": e.prime_editor,
-                "cell_type": e.cell_type,
-                "delivery_method": e.delivery_method,
-                "editing_efficiency": e.editing_efficiency,
-                "product_purity": e.product_purity,
-                "indel_frequency": e.indel_frequency,
-                "confidence_score": e.confidence_score,
-                "validated": e.validated,
-                "paper_pmid": e.paper.pmid if e.paper else None,
-                "paper_doi": e.paper.doi if e.paper else None,
-                "paper_year": e.paper.year if e.paper else None,
-            })
+    if entry_count > 0 and st.button("Generate Export"):
+        with st.spinner(f"Generating {export_format} export for {entry_count:,} entries..."):
+            # Use pd.read_sql for memory efficiency instead of loading all ORM objects
+            from sqlalchemy import create_engine, text
+            engine = session.get_bind()
 
-        df = pd.DataFrame(rows)
+            sql = """
+                SELECT
+                    e.entry_name, e.pegrna_type,
+                    e.spacer_sequence, e.pbs_sequence, e.pbs_length,
+                    e.rtt_sequence, e.rtt_length,
+                    e.three_prime_extension, e.full_sequence, e.nicking_sgrna_seq,
+                    e.target_gene, e.target_locus, e.target_organism,
+                    e.edit_type, e.edit_description, e.intended_mutation,
+                    e.prime_editor, e.cell_type, e.delivery_method,
+                    e.editing_efficiency, e.product_purity, e.indel_frequency,
+                    e.confidence_score, e.validated,
+                    p.pmid AS paper_pmid, p.doi AS paper_doi, p.year AS paper_year
+                FROM pegrna_entries e
+                LEFT JOIN papers p ON e.paper_id = p.id
+            """
+            if validated_export:
+                sql += " WHERE e.validated = 1"
+
+            df = pd.read_sql(text(sql), engine)
 
         if export_format == "CSV":
             csv_data = df.to_csv(index=False)
@@ -654,6 +987,12 @@ Each entry contains:
 - **Conditions**: prime editor version, cell type, delivery method
 - **Results**: editing efficiency, product purity, indel frequency
 - **Provenance**: source paper, confidence score, validation status
+
+## ClinVar Integration
+
+Entries can be cross-referenced with NCBI ClinVar to identify pegRNAs that target
+clinically relevant genetic variants. Matches are scored by gene, edit type alignment,
+and mutation description overlap.
 
 ## Confidence Scoring
 

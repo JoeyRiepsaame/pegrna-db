@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for the pegRNA database."""
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, Text, Float, Boolean, DateTime, ForeignKey, create_engine,
+    Column, Integer, Text, Float, Boolean, DateTime, ForeignKey, Index, create_engine,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -33,6 +33,18 @@ class Paper(Base):
 
 class PegRNAEntry(Base):
     __tablename__ = "pegrna_entries"
+    __table_args__ = (
+        Index("ix_pegrna_target_gene", "target_gene"),
+        Index("ix_pegrna_edit_type", "edit_type"),
+        Index("ix_pegrna_cell_type", "cell_type"),
+        Index("ix_pegrna_prime_editor", "prime_editor"),
+        Index("ix_pegrna_target_organism", "target_organism"),
+        Index("ix_pegrna_editing_efficiency", "editing_efficiency"),
+        Index("ix_pegrna_pegrna_type", "pegrna_type"),
+        Index("ix_pegrna_delivery_method", "delivery_method"),
+        Index("ix_pegrna_pbs_length", "pbs_length"),
+        Index("ix_pegrna_rtt_length", "rtt_length"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     paper_id = Column(Integer, ForeignKey("papers.id"), nullable=False)
@@ -84,6 +96,56 @@ class PegRNAEntry(Base):
             f"<PegRNAEntry(id={self.id}, gene={self.target_gene}, "
             f"type={self.pegrna_type}, eff={self.editing_efficiency})>"
         )
+
+
+class ClinVarVariant(Base):
+    __tablename__ = "clinvar_variants"
+    __table_args__ = (
+        Index("ix_clinvar_gene", "gene_symbol"),
+        Index("ix_clinvar_chr_start", "chromosome", "start"),
+        Index("ix_clinvar_significance", "clinical_significance"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    variation_id = Column(Integer, unique=True, nullable=False)
+    allele_id = Column(Integer, nullable=True)
+    variant_type = Column(Text, nullable=True)
+    name = Column(Text, nullable=True)
+    gene_symbol = Column(Text, nullable=True)
+    clinical_significance = Column(Text, nullable=True)
+    phenotype_list = Column(Text, nullable=True)
+    review_status = Column(Text, nullable=True)
+    chromosome = Column(Text, nullable=True)
+    start = Column(Integer, nullable=True)
+    stop = Column(Integer, nullable=True)
+    reference_allele = Column(Text, nullable=True)
+    alternate_allele = Column(Text, nullable=True)
+    assembly = Column(Text, nullable=True)
+    hgvs_cdna = Column(Text, nullable=True)
+    hgvs_protein = Column(Text, nullable=True)
+    last_evaluated = Column(Text, nullable=True)
+    rs_dbsnp = Column(Text, nullable=True)
+
+    matches = relationship("PegRNAClinVarMatch", back_populates="clinvar_variant",
+                           cascade="all, delete-orphan")
+
+
+class PegRNAClinVarMatch(Base):
+    __tablename__ = "pegrna_clinvar_matches"
+    __table_args__ = (
+        Index("ix_match_pegrna", "pegrna_entry_id"),
+        Index("ix_match_clinvar", "clinvar_variant_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pegrna_entry_id = Column(Integer, ForeignKey("pegrna_entries.id"), nullable=False)
+    clinvar_variant_id = Column(Integer, ForeignKey("clinvar_variants.id"), nullable=False)
+    match_type = Column(Text, nullable=False)
+    match_confidence = Column(Float, default=0.5)
+    notes = Column(Text, nullable=True)
+
+    pegrna_entry = relationship("PegRNAEntry", backref="clinvar_matches")
+    clinvar_variant = relationship("ClinVarVariant", back_populates="matches")
 
 
 def init_db(db_path: str) -> sessionmaker:
