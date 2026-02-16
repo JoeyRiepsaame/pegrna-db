@@ -51,6 +51,20 @@ def has_clinvar_data(session):
         return False
 
 
+def classify_editing_technology(editor_value):
+    """Classify an editor value as Prime Editing or Base Editing."""
+    if not editor_value:
+        return "Unknown"
+    val = editor_value.lower()
+    if any(be in val for be in ["abe", "cbe"]):
+        return "Base Editing"
+    if any(pe in val for pe in ["pe1", "pe2", "pe3", "pe4", "pe5", "pe6", "pe7",
+                                 "pemax", "peco", "twipe", "twinpe", "mpe",
+                                 "sape", "tj-pe", "epe", "pegr", "prime"]):
+        return "Prime Editing"
+    return "Unknown"
+
+
 session = get_session()
 
 # --- Sidebar Navigation ---
@@ -67,7 +81,7 @@ page = st.sidebar.radio(
 # SEARCH & BROWSE PAGE
 # ============================================================
 if page == "Search & Browse":
-    st.title("Search (e)pegRNA Entries")
+    st.title("Search Guide RNA Entries")
 
     # Clear filters button
     if st.button("Clear Filters"):
@@ -94,14 +108,16 @@ if page == "Search & Browse":
         cell_filter = st.text_input("Cell Type", placeholder="e.g., HEK293T, K562", key="filter_cell")
 
     # Filters - Row 2
-    col5, col6, col7, col8 = st.columns(4)
+    col5, col6, col7, col8, col9 = st.columns(5)
     with col5:
         pegrna_type_filter = st.selectbox("pegRNA Type", ["All", "pegRNA", "epegRNA"], key="filter_type")
     with col6:
-        min_eff = st.number_input("Min Efficiency (%)", min_value=0.0, max_value=100.0, value=0.0, key="filter_min_eff")
+        tech_filter = st.selectbox("Editing Technology", ["All", "Prime Editing", "Base Editing"], key="filter_tech")
     with col7:
-        max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0, key="filter_max_eff")
+        min_eff = st.number_input("Min Efficiency (%)", min_value=0.0, max_value=100.0, value=0.0, key="filter_min_eff")
     with col8:
+        max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0, key="filter_max_eff")
+    with col9:
         organism_filter = st.text_input("Organism", placeholder="e.g., Human, Mouse", key="filter_organism")
 
     # Row 3: validated + ClinVar filter + sorting
@@ -196,6 +212,18 @@ if page == "Search & Browse":
         count_query = count_query.filter(_PE.target_organism.ilike(f"%{organism_filter}%"))
     if validated_only:
         count_query = count_query.filter(_PE.validated.is_(True))
+    if tech_filter == "Prime Editing":
+        from sqlalchemy import or_
+        count_query = count_query.filter(or_(
+            *[_PE.prime_editor.ilike(f"%{kw}%") for kw in
+              ["PE1", "PE2", "PE3", "PE4", "PE5", "PE6", "PE7", "PEmax", "PECO", "twinPE", "mPE", "SaPE", "TJ-PE", "ePE", "pegRNA", "prime"]]
+        ))
+    elif tech_filter == "Base Editing":
+        from sqlalchemy import or_
+        count_query = count_query.filter(or_(
+            _PE.prime_editor.ilike("%ABE%"),
+            _PE.prime_editor.ilike("%CBE%"),
+        ))
 
     # ClinVar filter on count query
     if _has_clinvar and clinvar_filter != "All":
@@ -230,6 +258,7 @@ if page == "Search & Browse":
         min_efficiency=min_eff if min_eff > 0 else None,
         max_efficiency=max_eff if max_eff < 100 else None,
         target_organism=organism_filter or None,
+        editing_technology=tech_filter if tech_filter != "All" else None,
         validated_only=validated_only,
         sort_by=sort_by,
         sort_desc=sort_desc,
@@ -260,19 +289,19 @@ if page == "Search & Browse":
             ext = getattr(e, 'extension_sequence', None)
             if not ext and e.rtt_sequence and e.pbs_sequence:
                 ext = e.rtt_sequence + e.pbs_sequence
-            ext_len = len(ext) if ext else None
+            tech = classify_editing_technology(e.prime_editor)
             row = {
                 "ID": e.id,
                 "Name": e.entry_name or "-",
+                "Tech": tech,
                 "Type": e.pegrna_type or "-",
                 "Gene": e.target_gene or "-",
                 "Spacer": e.spacer_sequence or "-",
+                "3' Extension (RTT + PBS)": ext or "-",
                 "PBS": f"{e.pbs_length}nt" if e.pbs_length else "-",
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
-                "3' Ext": f"{ext_len}nt" if ext_len else "-",
-                "Full Seq": "Yes" if (e.full_sequence or (e.spacer_sequence and ext)) else "-",
                 "Edit": e.edit_type or "-",
-                "PE": e.prime_editor or "-",
+                "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",

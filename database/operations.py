@@ -95,6 +95,7 @@ def search_entries(
     min_efficiency: Optional[float] = None,
     max_efficiency: Optional[float] = None,
     target_organism: Optional[str] = None,
+    editing_technology: Optional[str] = None,
     validated_only: bool = False,
     sort_by: Optional[str] = None,
     sort_desc: bool = False,
@@ -102,6 +103,7 @@ def search_entries(
     offset: int = 0,
 ) -> list[PegRNAEntry]:
     """Search pegRNA entries with filters and sorting."""
+    from sqlalchemy import or_
     query = session.query(PegRNAEntry)
 
     if target_gene:
@@ -120,6 +122,17 @@ def search_entries(
         query = query.filter(PegRNAEntry.editing_efficiency <= max_efficiency)
     if target_organism:
         query = query.filter(PegRNAEntry.target_organism.ilike(f"%{target_organism}%"))
+    if editing_technology == "Prime Editing":
+        query = query.filter(or_(
+            *[PegRNAEntry.prime_editor.ilike(f"%{kw}%") for kw in
+              ["PE1", "PE2", "PE3", "PE4", "PE5", "PE6", "PE7", "PEmax", "PECO",
+               "twinPE", "mPE", "SaPE", "TJ-PE", "ePE", "pegRNA", "prime"]]
+        ))
+    elif editing_technology == "Base Editing":
+        query = query.filter(or_(
+            PegRNAEntry.prime_editor.ilike("%ABE%"),
+            PegRNAEntry.prime_editor.ilike("%CBE%"),
+        ))
     if validated_only:
         query = query.filter(PegRNAEntry.validated.is_(True))
 
