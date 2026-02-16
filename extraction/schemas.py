@@ -45,6 +45,7 @@ class PegRNAExtracted(BaseModel):
     three_prime_extension: Optional[str] = None
     linker_sequence: Optional[str] = None
     full_sequence: Optional[str] = None
+    extension_sequence: Optional[str] = None  # Combined RTT+PBS from 3' extension column
     nicking_sgrna_seq: Optional[str] = None
 
     # Target
@@ -81,7 +82,7 @@ class PegRNAExtracted(BaseModel):
 
     @field_validator("spacer_sequence", "pbs_sequence", "rtt_sequence",
                      "linker_sequence", "full_sequence", "nicking_sgrna_seq",
-                     mode="before")
+                     "extension_sequence", mode="before")
     @classmethod
     def clean_sequence(cls, v):
         if v is None:
@@ -172,6 +173,64 @@ class PegRNAExtracted(BaseModel):
         return organism_map.get(v_clean, v_str.strip())
 
     @model_validator(mode="after")
+    def decompose_full_sequence(self):
+        """Decompose full_sequence into spacer + extension using scaffold matching."""
+        if not self.full_sequence:
+            return self
+        if self.spacer_sequence and self.pbs_sequence and self.rtt_sequence:
+            return self
+
+        # Common SpCas9 scaffold sequences (longest first for best match)
+        SCAFFOLDS = [
+            "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC",
+            "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC",
+            "GTTTTAGAGCTAGAAATAGCAAGTTAAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTG",
+        ]
+
+        full = self.full_sequence
+        for scaffold in SCAFFOLDS:
+            idx = full.find(scaffold)
+            if idx >= 0:
+                # Spacer is before the scaffold (typically 20nt)
+                if not self.spacer_sequence and 15 <= idx <= 25:
+                    self.spacer_sequence = full[:idx]
+                # Extension (RTT+PBS) is after the scaffold
+                ext_start = idx + len(scaffold)
+                extension = full[ext_start:]
+                if extension and not self.extension_sequence:
+                    self.extension_sequence = extension
+                break
+        return self
+
+    @model_validator(mode="after")
+    def split_extension_sequence(self):
+        """Split extension_sequence (RTT+PBS) into individual components."""
+        if not self.extension_sequence:
+            return self
+        if self.pbs_sequence and self.rtt_sequence:
+            return self
+
+        ext = self.extension_sequence
+        # If both lengths known, split precisely
+        if self.pbs_length and self.rtt_length:
+            if self.pbs_length + self.rtt_length == len(ext):
+                if not self.rtt_sequence:
+                    self.rtt_sequence = ext[:self.rtt_length]
+                if not self.pbs_sequence:
+                    self.pbs_sequence = ext[self.rtt_length:]
+        # If only PBS length known: PBS is at the 3' end
+        elif self.pbs_length and not self.pbs_sequence and self.pbs_length < len(ext):
+            self.pbs_sequence = ext[-self.pbs_length:]
+            if not self.rtt_sequence:
+                self.rtt_sequence = ext[:-self.pbs_length]
+        # If only RTT length known: RTT is at the 5' end
+        elif self.rtt_length and not self.rtt_sequence and self.rtt_length < len(ext):
+            self.rtt_sequence = ext[:self.rtt_length]
+            if not self.pbs_sequence:
+                self.pbs_sequence = ext[self.rtt_length:]
+        return self
+
+    @model_validator(mode="after")
     def infer_lengths(self):
         """Infer PBS/RTT lengths from sequences if not provided."""
         if self.pbs_sequence and not self.pbs_length:
@@ -182,4 +241,6 @@ class PegRNAExtracted(BaseModel):
 
     def to_db_dict(self) -> dict:
         """Convert to dict for database insertion."""
-        return self.model_dump(exclude_none=False)
+        d = self.model_dump(exclude_none=False)
+        d.pop("extension_sequence", None)  # Transient field, not in DB model
+        return d

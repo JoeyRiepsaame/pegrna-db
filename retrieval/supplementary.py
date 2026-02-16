@@ -173,7 +173,7 @@ def parse_supplementary_tables(filepath: Path) -> list[pd.DataFrame]:
     return dfs
 
 
-def _find_header_row(df: pd.DataFrame, max_scan: int = 20) -> int:
+def _find_header_row(df: pd.DataFrame, max_scan: int = 50) -> int:
     """Find the likely header row in a DataFrame.
 
     Looks for rows with multiple short string values that look like column names.
@@ -183,6 +183,8 @@ def _find_header_row(df: pd.DataFrame, max_scan: int = 20) -> int:
         "spacer", "pbs", "rtt", "template", "scaffold", "guide", "sequence",
         "efficiency", "gene", "target", "locus", "motif", "linker", "name",
         "edit", "cell", "type", "primer", "amplicon", "full length",
+        "protospacer", "oligo", "grna", "pegrna", "extension", "sgrna",
+        "nicking", "delivery", "organism", "rt_template", "rt template",
     }
 
     best_row = 0
@@ -216,11 +218,20 @@ def find_pegrna_tables(dfs: list[pd.DataFrame]) -> list[pd.DataFrame]:
     """
     from config import (
         SPACER_PATTERNS, PBS_PATTERNS, RTT_PATTERNS,
-        EFFICIENCY_PATTERNS, GENE_PATTERNS,
+        EFFICIENCY_PATTERNS, GENE_PATTERNS, EXTENSION_PATTERNS,
     )
+
+    # Include extension and full_sequence patterns so tables with combined
+    # oligo columns are also recognized as pegRNA tables
+    full_seq_patterns = [
+        "full_sequence", "full_seq", "pegrna_sequence", "pegrna_seq",
+        "full length", "pegrna_oligo", "oligo_sequence", "complete_sequence",
+        "pegrna sequence", "sequence (5' to 3')", "sequence (5to3)",
+    ]
 
     all_patterns = (
         SPACER_PATTERNS + PBS_PATTERNS + RTT_PATTERNS
+        + EXTENSION_PATTERNS + full_seq_patterns
         + EFFICIENCY_PATTERNS + GENE_PATTERNS
     )
 
@@ -231,7 +242,7 @@ def find_pegrna_tables(dfs: list[pd.DataFrame]) -> list[pd.DataFrame]:
             1 for col in cols_lower
             if any(pat in col for pat in all_patterns)
         )
-        if matches >= 2:
+        if matches >= 1:
             relevant.append(df)
             sheet = df.attrs.get("source_sheet", "")
             file = df.attrs.get("source_file", "")

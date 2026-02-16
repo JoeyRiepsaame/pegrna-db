@@ -196,6 +196,108 @@ def sequence_search(
     return results[:limit]
 
 
+SEQUENCE_FIELDS = [
+    "spacer_sequence", "pbs_sequence", "rtt_sequence",
+    "three_prime_extension", "linker_sequence", "full_sequence",
+    "nicking_sgrna_seq", "pbs_length", "rtt_length",
+    "target_gene", "target_locus", "target_organism",
+    "edit_type", "edit_description", "intended_mutation",
+    "prime_editor", "cell_type", "delivery_method",
+    "editing_efficiency", "product_purity", "indel_frequency",
+    "pegrna_type", "entry_name",
+]
+
+
+def _fill_missing_sequences(entry: PegRNAEntry, new_data: dict) -> bool:
+    """Fill NULL fields on an existing entry from new_data. Never overwrites.
+
+    Returns True if any field was updated.
+    """
+    changed = False
+    for field in SEQUENCE_FIELDS:
+        current = getattr(entry, field, None)
+        new_val = new_data.get(field)
+        if current is None and new_val is not None:
+            setattr(entry, field, new_val)
+            changed = True
+    return changed
+
+
+def bulk_update_sequences_for_paper(
+    session: Session,
+    paper_id: int,
+    new_entries: list[dict],
+    match_strategy: str = "auto",
+) -> int:
+    """Match new extraction results to existing entries and fill in NULL sequence fields.
+
+    match_strategy:
+    - "name": Match by entry_name
+    - "spacer": Match by spacer_sequence
+    - "order": Match by row order
+    - "auto": Try name, then spacer, then order
+
+    Never creates new rows. Never overwrites existing values.
+    """
+    existing = (
+        session.query(PegRNAEntry)
+        .filter_by(paper_id=paper_id)
+        .order_by(PegRNAEntry.id)
+        .all()
+    )
+
+    if not existing:
+        return 0
+
+    updated = 0
+
+    if match_strategy in ("auto", "name"):
+        name_map = {}
+        for entry in existing:
+            if entry.entry_name:
+                name_map[entry.entry_name.lower().strip()] = entry
+        matched_by_name = 0
+        for new_data in new_entries:
+            name = (new_data.get("entry_name") or "").lower().strip()
+            if name and name in name_map:
+                if _fill_missing_sequences(name_map[name], new_data):
+                    matched_by_name += 1
+        if matched_by_name > 0:
+            session.flush()
+            updated += matched_by_name
+            if match_strategy == "auto":
+                return updated
+
+    if match_strategy in ("auto", "spacer") and updated == 0:
+        spacer_map = {}
+        for entry in existing:
+            if entry.spacer_sequence:
+                spacer_map[entry.spacer_sequence] = entry
+        matched_by_spacer = 0
+        for new_data in new_entries:
+            spacer = (new_data.get("spacer_sequence") or "").strip().upper()
+            if spacer and spacer in spacer_map:
+                if _fill_missing_sequences(spacer_map[spacer], new_data):
+                    matched_by_spacer += 1
+        if matched_by_spacer > 0:
+            session.flush()
+            updated += matched_by_spacer
+            if match_strategy == "auto":
+                return updated
+
+    if match_strategy in ("auto", "order") and updated == 0:
+        matched_by_order = 0
+        for i, new_data in enumerate(new_entries):
+            if i < len(existing):
+                if _fill_missing_sequences(existing[i], new_data):
+                    matched_by_order += 1
+        if matched_by_order > 0:
+            session.flush()
+            updated += matched_by_order
+
+    return updated
+
+
 def get_stats(session: Session) -> dict:
     """Get database statistics."""
     total_papers = session.query(Paper).count()

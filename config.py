@@ -54,15 +54,29 @@ LLM_MAX_TOKENS = 8192
 # Patterns are tried in order; put most specific first
 SPACER_PATTERNS = [
     "spacer_sequence", "spacer", "guide_sequence", "guide",
-    "protospacer", "target_sequence", "sgrna", "grna",
+    "protospacer", "protospacer_sequence", "protospacer_guide",
+    "target_sequence", "target site sequence",
+    "sgrna", "grna", "grna_sequence",
+    "spacer_seq", "guide_seq", "pegrna_spacer",
+    "n20", "20mer", "crrna",
 ]
 PBS_PATTERNS = [
     "pbs_sequence", "pbs_seq", "primer_binding", "primer binding site",
-    "pbs",
+    "pbs", "primer_binding_site", "primerbindingsite",
+    "primer_binding_sequence", "pbs_dna", "pbs_oligo",
 ]
 RTT_PATTERNS = [
     "rtt_sequence", "rtt_seq", "rt_template", "rt_seq",
     "reverse transcriptase template", "rt template", "rtt",
+    "rt_template_sequence", "rtt_dna", "rttemplate",
+    "reverse_transcriptase", "template_sequence", "rt_oligo",
+    "template", "ha_rtt",
+]
+# Combined extension patterns (RTT+PBS in a single column)
+EXTENSION_PATTERNS = [
+    "extension_seq", "3' extension", "3'-extension", "extension sequence",
+    "3' extension sequence", "3'-extension sequence",
+    "pbs-rtt", "rtt+pbs", "rt+pbs", "pbs+rtt",
 ]
 EFFICIENCY_PATTERNS = [
     "editing_efficiency", "efficiency", "edit_eff", "pe_efficiency",

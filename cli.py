@@ -14,7 +14,7 @@ import config
 from database.models import init_db
 from database.operations import (
     get_or_create_paper, bulk_add_entries, update_paper_status,
-    search_entries, get_stats,
+    search_entries, get_stats, bulk_update_sequences_for_paper,
 )
 
 console = Console()
@@ -356,7 +356,7 @@ def _process_single_paper(session, paper, force_method: str = "auto"):
                     all_entries.extend(entries)
                 elif dfs and force_method in ("auto", "llm"):
                     # Tables exist but columns not recognized - try LLM
-                    for df in dfs[:3]:  # Limit to first 3 sheets
+                    for df in dfs[:10]:  # Check more sheets for pegRNA data
                         table_text = df.to_string(max_rows=200)
                         from extraction.llm_extractor import extract_table_with_llm
                         entries = extract_table_with_llm(table_text, paper.title)
@@ -605,6 +605,169 @@ def clinvar_update(
     console.print(f"  Variants in DB: {cv_count:,}")
     console.print(f"  Total matches: {match_count:,}")
     console.print(f"  pegRNA entries with matches: {matched_entries:,}")
+
+    session.close()
+
+
+@app.command(name="fix-sequences")
+def fix_sequences(
+    paper_id: Optional[int] = typer.Argument(None, help="Fix a specific paper ID (or all if omitted)"),
+    limit: int = typer.Option(50, "--limit", "-l", help="Max papers to process"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be updated without committing"),
+):
+    """Re-extract and fill missing sequences for papers already in the database.
+
+    Uses expanded column patterns and full-sequence decomposition to recover
+    sequences that were missed during initial extraction.
+    """
+    from database.models import Paper, PegRNAEntry
+    from retrieval.supplementary import (
+        list_supplementary_files, download_supplementary_file,
+        parse_supplementary_tables, find_pegrna_tables,
+    )
+    from extraction.rule_based import extract_from_multiple_tables
+    from extraction.schemas import PegRNAExtracted
+    from sqlalchemy import func, case
+
+    session = get_session()
+
+    # Find papers with missing sequences
+    if paper_id:
+        papers = [(paper_id,)]
+    else:
+        papers = session.execute(
+            session.query(
+                Paper.id,
+            ).join(PegRNAEntry).group_by(Paper.id).having(
+                func.sum(case(
+                    (PegRNAEntry.spacer_sequence.is_(None), 1), else_=0
+                )) + func.sum(case(
+                    (PegRNAEntry.pbs_sequence.is_(None), 1), else_=0
+                )) + func.sum(case(
+                    (PegRNAEntry.rtt_sequence.is_(None), 1), else_=0
+                )) > 0
+            ).order_by(
+                (func.sum(case(
+                    (PegRNAEntry.spacer_sequence.is_(None), 1), else_=0
+                )) + func.sum(case(
+                    (PegRNAEntry.pbs_sequence.is_(None), 1), else_=0
+                )) + func.sum(case(
+                    (PegRNAEntry.rtt_sequence.is_(None), 1), else_=0
+                ))).desc()
+            ).limit(limit)
+        ).all()
+
+    if not papers:
+        console.print("[green]No papers with missing sequences found[/green]")
+        session.close()
+        return
+
+    console.print(f"Processing {len(papers)} papers with missing sequences...")
+
+    total_updated = 0
+    total_decomposed = 0
+
+    for (pid,) in papers:
+        paper = session.query(Paper).get(pid)
+        if not paper:
+            continue
+
+        entry_count = session.query(PegRNAEntry).filter_by(paper_id=pid).count()
+        missing = session.query(
+            func.sum(case((PegRNAEntry.spacer_sequence.is_(None), 1), else_=0)),
+            func.sum(case((PegRNAEntry.pbs_sequence.is_(None), 1), else_=0)),
+            func.sum(case((PegRNAEntry.rtt_sequence.is_(None), 1), else_=0)),
+        ).filter_by(paper_id=pid).first()
+
+        console.print(
+            f"\n[bold]Paper {pid} (PMID {paper.pmid})[/bold]: "
+            f"{entry_count} entries, missing spacer={missing[0]}, pbs={missing[1]}, rtt={missing[2]}"
+        )
+
+        # Step A: Re-extract from supplementary files with expanded patterns
+        new_entries = []
+        if paper.pmcid:
+            save_dir = config.RAW_PAPERS_DIR / paper.pmcid
+            cached_files = []
+            if save_dir.exists():
+                for f in save_dir.iterdir():
+                    if f.suffix.lower() in ('.xlsx', '.xls', '.csv', '.tsv'):
+                        cached_files.append(f)
+
+            if not cached_files:
+                supp_files = list_supplementary_files(paper.pmcid)
+                tabular = [f for f in supp_files if f["type"] in ("excel", "csv", "tsv")]
+                for supp in tabular:
+                    filepath = download_supplementary_file(paper.pmcid, supp["filename"])
+                    if filepath:
+                        cached_files.append(filepath)
+
+            for filepath in cached_files:
+                dfs = parse_supplementary_tables(filepath)
+                pegrna_tables = find_pegrna_tables(dfs)
+                if pegrna_tables:
+                    entries = extract_from_multiple_tables(pegrna_tables)
+                    new_entries.extend(entries)
+
+        # Match and update existing entries
+        if new_entries:
+            entry_dicts = [e.to_db_dict() for e in new_entries]
+            updated = bulk_update_sequences_for_paper(session, pid, entry_dicts)
+            total_updated += updated
+            console.print(f"  Updated {updated} entries from re-extraction")
+
+        # Step B: Decompose full_sequence for entries that have it but missing components
+        entries_with_full = (
+            session.query(PegRNAEntry)
+            .filter_by(paper_id=pid)
+            .filter(PegRNAEntry.full_sequence.isnot(None))
+            .filter(
+                (PegRNAEntry.spacer_sequence.is_(None))
+                | (PegRNAEntry.pbs_sequence.is_(None))
+                | (PegRNAEntry.rtt_sequence.is_(None))
+            )
+            .all()
+        )
+        for entry in entries_with_full:
+            # Re-validate through schema to trigger decomposition
+            try:
+                schema = PegRNAExtracted(
+                    spacer_sequence=entry.spacer_sequence,
+                    pbs_sequence=entry.pbs_sequence,
+                    pbs_length=entry.pbs_length,
+                    rtt_sequence=entry.rtt_sequence,
+                    rtt_length=entry.rtt_length,
+                    full_sequence=entry.full_sequence,
+                    extension_sequence=None,
+                    entry_name=entry.entry_name,
+                )
+                changed = False
+                if schema.spacer_sequence and not entry.spacer_sequence:
+                    entry.spacer_sequence = schema.spacer_sequence
+                    changed = True
+                if schema.pbs_sequence and not entry.pbs_sequence:
+                    entry.pbs_sequence = schema.pbs_sequence
+                    entry.pbs_length = schema.pbs_length
+                    changed = True
+                if schema.rtt_sequence and not entry.rtt_sequence:
+                    entry.rtt_sequence = schema.rtt_sequence
+                    entry.rtt_length = schema.rtt_length
+                    changed = True
+                if changed:
+                    total_decomposed += 1
+            except Exception:
+                pass
+
+        if not dry_run:
+            session.commit()
+        else:
+            session.rollback()
+
+    console.print(f"\n[bold green]Fix-sequences complete![/bold green]")
+    console.print(f"  Updated from re-extraction: {total_updated}")
+    console.print(f"  Decomposed from full_sequence: {total_decomposed}")
+    if dry_run:
+        console.print("[yellow]Dry run — no changes committed[/yellow]")
 
     session.close()
 

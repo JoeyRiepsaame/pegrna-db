@@ -82,7 +82,7 @@ def extract_from_dataframe(df: pd.DataFrame) -> list[PegRNAExtracted]:
             entry_data["confidence_score"] = 0.8
 
             entry = PegRNAExtracted(**entry_data)
-            if entry.spacer_sequence or entry.target_gene or entry.full_sequence:
+            if entry.spacer_sequence or entry.target_gene or entry.full_sequence or entry.extension_sequence:
                 entries.append(entry)
 
         except Exception as e:
@@ -235,6 +235,7 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
         "spacer_sequence": config.SPACER_PATTERNS,
         "pbs_sequence": config.PBS_PATTERNS,
         "rtt_sequence": config.RTT_PATTERNS,
+        "extension_sequence": config.EXTENSION_PATTERNS,
         "editing_efficiency": config.EFFICIENCY_PATTERNS,
         "edit_type": config.EDIT_TYPE_PATTERNS,
         "cell_type": config.CELL_TYPE_PATTERNS,
@@ -265,7 +266,10 @@ def _map_columns(df: pd.DataFrame) -> dict[str, str]:
                                    "motif", "evopreq", "mpknot", "tevopreq"],
         "linker_sequence": ["linker", "linker_sequence"],
         "full_sequence": ["full_sequence", "full_seq", "pegrna_sequence",
-                         "pegrna_seq", "full length"],
+                         "pegrna_seq", "full length", "pegrna_oligo",
+                         "oligo_sequence", "complete_sequence",
+                         "ordered_oligo", "pegrna sequence",
+                         "sequence (5' to 3')", "sequence (5to3)"],
     }
 
     # Columns to skip for sequence fields (contain numeric data, not sequences)
