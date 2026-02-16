@@ -59,6 +59,7 @@ class PegRNAEntry(Base):
     pbs_length = Column(Integer, nullable=True)
     rtt_sequence = Column(Text, nullable=True)
     rtt_length = Column(Integer, nullable=True)
+    extension_sequence = Column(Text, nullable=True)  # Combined RTT+PBS (3' extension after scaffold)
     three_prime_extension = Column(Text, nullable=True)  # evopreQ1, mpknot, tevopreQ1, etc.
     linker_sequence = Column(Text, nullable=True)
     full_sequence = Column(Text, nullable=True)
@@ -152,4 +153,23 @@ def init_db(db_path: str) -> sessionmaker:
     """Initialize database and return a session factory."""
     engine = create_engine(f"sqlite:///{db_path}", echo=False)
     Base.metadata.create_all(engine)
+
+    # Migration: add extension_sequence column if missing
+    from sqlalchemy import text, inspect
+    insp = inspect(engine)
+    if "pegrna_entries" in insp.get_table_names():
+        cols = [c["name"] for c in insp.get_columns("pegrna_entries")]
+        if "extension_sequence" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE pegrna_entries ADD COLUMN extension_sequence TEXT"
+                ))
+                # Back-fill from existing RTT + PBS
+                conn.execute(text("""
+                    UPDATE pegrna_entries
+                    SET extension_sequence = rtt_sequence || pbs_sequence
+                    WHERE rtt_sequence IS NOT NULL
+                      AND pbs_sequence IS NOT NULL
+                """))
+
     return sessionmaker(bind=engine)

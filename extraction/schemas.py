@@ -239,8 +239,13 @@ class PegRNAExtracted(BaseModel):
             self.rtt_length = len(self.rtt_sequence)
         return self
 
+    @model_validator(mode="after")
+    def build_extension_from_components(self):
+        """Build extension_sequence from RTT + PBS if not already set."""
+        if not self.extension_sequence and self.rtt_sequence and self.pbs_sequence:
+            self.extension_sequence = self.rtt_sequence + self.pbs_sequence
+        return self
+
     def to_db_dict(self) -> dict:
         """Convert to dict for database insertion."""
-        d = self.model_dump(exclude_none=False)
-        d.pop("extension_sequence", None)  # Transient field, not in DB model
-        return d
+        return self.model_dump(exclude_none=False)

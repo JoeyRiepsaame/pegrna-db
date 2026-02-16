@@ -257,6 +257,10 @@ if page == "Search & Browse":
         # Build display dataframe
         rows = []
         for e in results:
+            ext = getattr(e, 'extension_sequence', None)
+            if not ext and e.rtt_sequence and e.pbs_sequence:
+                ext = e.rtt_sequence + e.pbs_sequence
+            ext_len = len(ext) if ext else None
             row = {
                 "ID": e.id,
                 "Name": e.entry_name or "-",
@@ -265,13 +269,12 @@ if page == "Search & Browse":
                 "Spacer": e.spacer_sequence or "-",
                 "PBS": f"{e.pbs_length}nt" if e.pbs_length else "-",
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
-                "3' Motif": e.three_prime_extension or "-",
+                "3' Ext": f"{ext_len}nt" if ext_len else "-",
+                "Full Seq": "Yes" if (e.full_sequence or (e.spacer_sequence and ext)) else "-",
                 "Edit": e.edit_type or "-",
                 "PE": e.prime_editor or "-",
-                "Cell": e.cell_type or "-",
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
-                "Confidence": f"{e.confidence_score:.2f}" if e.confidence_score else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
             }
             if _has_clinvar:
@@ -287,16 +290,53 @@ if page == "Search & Browse":
             entry = session.query(PegRNAEntry).get(selected_id)
             if entry:
                 with st.expander("Entry Details", expanded=True):
+                    # Full pegRNA construct display (most prominent)
+                    SCAFFOLD = "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC"
+
+                    # Build extension from components if not stored
+                    ext_seq = getattr(entry, 'extension_sequence', None)
+                    if not ext_seq and entry.rtt_sequence and entry.pbs_sequence:
+                        ext_seq = entry.rtt_sequence + entry.pbs_sequence
+
+                    if entry.full_sequence:
+                        st.markdown("**Full pegRNA Sequence**")
+                        st.code(entry.full_sequence, language=None)
+                        full = entry.full_sequence
+                        idx = full.find(SCAFFOLD)
+                        if idx >= 0:
+                            spacer_part = full[:idx]
+                            ext_part = full[idx + len(SCAFFOLD):]
+                            st.caption(
+                                f"Structure: 5'-[Spacer: {len(spacer_part)}nt] "
+                                f"[Scaffold: {len(SCAFFOLD)}nt] "
+                                f"[3' Extension: {len(ext_part)}nt]-3'"
+                            )
+                    elif entry.spacer_sequence and ext_seq:
+                        reconstructed = entry.spacer_sequence + SCAFFOLD + ext_seq
+                        st.markdown("**Full pegRNA Sequence** *(reconstructed)*")
+                        st.code(reconstructed, language=None)
+                        st.caption(
+                            f"Structure: 5'-[Spacer: {len(entry.spacer_sequence)}nt] "
+                            f"[Scaffold: {len(SCAFFOLD)}nt] "
+                            f"[3' Extension: {len(ext_seq)}nt]-3'"
+                        )
+
+                    # 3' Extension (repair template)
+                    if ext_seq:
+                        st.markdown("**3' Extension (RTT + PBS)**")
+                        st.code(ext_seq, language=None)
+                        rtt_len = entry.rtt_length or (len(entry.rtt_sequence) if entry.rtt_sequence else "?")
+                        pbs_len = entry.pbs_length or (len(entry.pbs_sequence) if entry.pbs_sequence else "?")
+                        st.caption(f"RTT: {rtt_len}nt + PBS: {pbs_len}nt = {len(ext_seq)}nt total")
+
                     dcol1, dcol2 = st.columns(2)
                     with dcol1:
-                        st.markdown("**Sequences**")
+                        st.markdown("**Individual Sequences**")
                         st.code(f"Spacer:  {entry.spacer_sequence or 'N/A'}")
                         st.code(f"PBS:     {entry.pbs_sequence or 'N/A'} ({entry.pbs_length or '?'}nt)")
                         st.code(f"RTT:     {entry.rtt_sequence or 'N/A'} ({entry.rtt_length or '?'}nt)")
                         if entry.three_prime_extension:
-                            st.code(f"3' ext:  {entry.three_prime_extension}")
-                        if entry.full_sequence:
-                            st.code(f"Full:    {entry.full_sequence}")
+                            st.caption(f"3' structural motif: {entry.three_prime_extension}")
                         if entry.nicking_sgrna_seq:
                             st.code(f"Nick sgRNA: {entry.nicking_sgrna_seq}")
 
@@ -548,6 +588,7 @@ elif page == "Statistics":
             ("pbs_length", "PBS Length"),
             ("rtt_sequence", "RTT Seq"),
             ("rtt_length", "RTT Length"),
+            ("extension_sequence", "3' Extension"),
             ("full_sequence", "Full Seq"),
             ("target_gene", "Gene"),
             ("target_organism", "Organism"),
@@ -920,7 +961,7 @@ elif page == "Export":
                 SELECT
                     e.entry_name, e.pegrna_type,
                     e.spacer_sequence, e.pbs_sequence, e.pbs_length,
-                    e.rtt_sequence, e.rtt_length,
+                    e.rtt_sequence, e.rtt_length, e.extension_sequence,
                     e.three_prime_extension, e.full_sequence, e.nicking_sgrna_seq,
                     e.target_gene, e.target_locus, e.target_organism,
                     e.edit_type, e.edit_description, e.intended_mutation,
