@@ -16,6 +16,9 @@ import config
 from database.models import init_db, Paper, PegRNAEntry
 from database.operations import search_entries, get_stats, sequence_search
 
+# SpCas9 scaffold (tracrRNA) used for full pegRNA sequence reconstruction
+SCAFFOLD = "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC"
+
 # --- Page Config ---
 st.set_page_config(
     page_title="pegRNA Database",
@@ -313,6 +316,111 @@ if page == "Search & Browse":
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, height=600)
 
+        # --- Export filtered results ---
+        st.markdown("**Export these results**")
+        exp_col1, exp_col2, exp_col3 = st.columns(3)
+
+        with exp_col1:
+            csv_export = df.to_csv(index=False)
+            st.download_button(
+                f"Download CSV ({len(rows)} rows)",
+                csv_export,
+                file_name="pegrna_search_results.csv",
+                mime="text/csv",
+            )
+
+        with exp_col2:
+            # FASTA export
+            fasta_lines = []
+            for e in results:
+                ext = getattr(e, 'extension_sequence', None)
+                if not ext and e.rtt_sequence and e.pbs_sequence:
+                    ext = e.rtt_sequence + e.pbs_sequence
+                full = e.full_sequence
+                if not full and e.spacer_sequence and ext:
+                    full = e.spacer_sequence + SCAFFOLD + ext
+                if full:
+                    header = f">{e.id}|{e.target_gene or 'unknown'}|{e.edit_type or 'unknown'}|eff={e.editing_efficiency or 'NA'}%"
+                    fasta_lines.append(header)
+                    fasta_lines.append(full)
+            if fasta_lines:
+                st.download_button(
+                    f"Download FASTA ({len(fasta_lines)//2} seqs)",
+                    "\n".join(fasta_lines),
+                    file_name="pegrna_search_results.fasta",
+                    mime="text/plain",
+                )
+            else:
+                st.caption("No full sequences available for FASTA export")
+
+        with exp_col3:
+            # SnapGene GenBank format
+            gb_records = []
+            for e in results:
+                ext = getattr(e, 'extension_sequence', None)
+                if not ext and e.rtt_sequence and e.pbs_sequence:
+                    ext = e.rtt_sequence + e.pbs_sequence
+                full = e.full_sequence
+                if not full and e.spacer_sequence and ext:
+                    full = e.spacer_sequence + SCAFFOLD + ext
+                if not full:
+                    continue
+
+                locus_name = f"pegRNA_{e.id}"
+                gene = e.target_gene or "unknown"
+                seq_len = len(full)
+
+                # Find component positions
+                spacer_end = len(e.spacer_sequence) if e.spacer_sequence else 20
+                scaffold_end = spacer_end + len(SCAFFOLD)
+                rtt_end = scaffold_end + (len(e.rtt_sequence) if e.rtt_sequence else 0)
+
+                gb = []
+                gb.append(f"LOCUS       {locus_name:<16s} {seq_len} bp    DNA     linear   SYN")
+                gb.append(f"DEFINITION  pegRNA targeting {gene}, {e.edit_type or 'unknown'} edit.")
+                if e.paper and e.paper.pmid:
+                    gb.append(f"ACCESSION   PMID:{e.paper.pmid}")
+                gb.append(f"COMMENT     Editing efficiency: {e.editing_efficiency or 'N/A'}%")
+                if e.prime_editor:
+                    gb.append(f"COMMENT     Prime editor: {e.prime_editor}")
+                if e.cell_type:
+                    gb.append(f"COMMENT     Cell type: {e.cell_type}")
+                gb.append("FEATURES             Location/Qualifiers")
+                gb.append(f'     misc_feature    1..{spacer_end}')
+                gb.append(f'                     /label="Spacer"')
+                gb.append(f'                     /note="Spacer sequence targeting {gene}"')
+                gb.append(f'     misc_feature    {spacer_end+1}..{scaffold_end}')
+                gb.append(f'                     /label="Scaffold"')
+                gb.append(f'                     /note="SpCas9 tracrRNA scaffold"')
+                if e.rtt_sequence:
+                    gb.append(f'     misc_feature    {scaffold_end+1}..{rtt_end}')
+                    gb.append(f'                     /label="RTT"')
+                    gb.append(f'                     /note="Reverse transcriptase template ({len(e.rtt_sequence)}nt)"')
+                if e.pbs_sequence:
+                    pbs_start = rtt_end + 1 if e.rtt_sequence else scaffold_end + 1
+                    pbs_end = pbs_start + len(e.pbs_sequence) - 1
+                    gb.append(f'     misc_feature    {pbs_start}..{pbs_end}')
+                    gb.append(f'                     /label="PBS"')
+                    gb.append(f'                     /note="Primer binding site ({len(e.pbs_sequence)}nt)"')
+                gb.append("ORIGIN")
+                # Format sequence in GenBank style (60 chars per line, numbered)
+                for i in range(0, len(full), 60):
+                    chunk = full[i:i+60].lower()
+                    parts = " ".join([chunk[j:j+10] for j in range(0, len(chunk), 10)])
+                    gb.append(f"{i+1:>9} {parts}")
+                gb.append("//")
+                gb_records.append("\n".join(gb))
+
+            if gb_records:
+                st.download_button(
+                    f"Download GenBank/SnapGene ({len(gb_records)} seqs)",
+                    "\n".join(gb_records),
+                    file_name="pegrna_search_results.gb",
+                    mime="text/plain",
+                )
+            else:
+                st.caption("No full sequences available for GenBank export")
+
         # Detail expander for selected entry
         selected_id = st.selectbox("View entry details", [r["ID"] for r in rows])
         if selected_id:
@@ -320,8 +428,7 @@ if page == "Search & Browse":
             if entry:
                 with st.expander("Entry Details", expanded=True):
                     # Full pegRNA construct display (most prominent)
-                    SCAFFOLD = "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC"
-
+        
                     # Build extension from components if not stored
                     ext_seq = getattr(entry, 'extension_sequence', None)
                     if not ext_seq and entry.rtt_sequence and entry.pbs_sequence:
@@ -448,6 +555,11 @@ elif page == "Statistics":
 
         # --- Edit type distribution ---
         st.subheader("Distribution of Edit Types")
+        VALID_EDIT_TYPES = {
+            "substitution", "insertion", "deletion", "1bpreplacement",
+            "multibpreplacement", "mnv", "onv", "duplication",
+            "inversion", "translocation",
+        }
         edit_type_counts = (
             session.query(PegRNAEntry.edit_type, func.count(PegRNAEntry.id))
             .filter(PegRNAEntry.edit_type.isnot(None))
@@ -455,25 +567,43 @@ elif page == "Statistics":
             .all()
         )
         if edit_type_counts:
-            et_df = pd.DataFrame(edit_type_counts, columns=["edit_type", "count"])
-            fig = px.pie(et_df, names="edit_type", values="count", title="Edit Types")
+            et_data = []
+            other_count = 0
+            for et, cnt in edit_type_counts:
+                if et.lower().strip() in VALID_EDIT_TYPES:
+                    et_data.append({"edit_type": et, "count": cnt})
+                else:
+                    other_count += cnt
+            if other_count > 0:
+                et_data.append({"edit_type": "Other", "count": other_count})
+            et_df = pd.DataFrame(et_data).sort_values("count", ascending=False)
+            fig = px.pie(
+                et_df, names="edit_type", values="count", title="Edit Types",
+                hole=0.3,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
         # --- Efficiency distribution ---
         st.subheader("Editing Efficiency Distribution")
         eff_rows = (
-            session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
-            .filter(PegRNAEntry.editing_efficiency.isnot(None))
-            .limit(50000)
+            session.query(PegRNAEntry.editing_efficiency)
+            .filter(
+                PegRNAEntry.editing_efficiency.isnot(None),
+                PegRNAEntry.editing_efficiency >= 0,
+                PegRNAEntry.editing_efficiency <= 100,
+            )
+            .limit(100000)
             .all()
         )
         if eff_rows:
-            eff_df = pd.DataFrame(eff_rows, columns=["efficiency", "pegrna_type"])
+            eff_df = pd.DataFrame(eff_rows, columns=["efficiency"])
             fig = px.histogram(
                 eff_df, x="efficiency", nbins=50,
                 title=f"Editing Efficiency Distribution (%) - {len(eff_rows):,} entries",
-                color="pegrna_type", barmode="overlay",
             )
+            fig.update_layout(xaxis_title="Editing Efficiency (%)", yaxis_title="Count")
             st.plotly_chart(fig, use_container_width=True)
 
         # --- Top genes ---
@@ -512,7 +642,7 @@ elif page == "Statistics":
             session.query(PegRNAEntry.editing_efficiency, PegRNAEntry.pegrna_type)
             .filter(
                 PegRNAEntry.editing_efficiency.isnot(None),
-                PegRNAEntry.pegrna_type.isnot(None),
+                PegRNAEntry.pegrna_type.in_(["pegRNA", "epegRNA"]),
             )
             .limit(50000)
             .all()
@@ -524,7 +654,10 @@ elif page == "Statistics":
                 title="Editing Efficiency: pegRNA vs epegRNA",
                 color="pegrna_type",
             )
+            fig.update_layout(xaxis_title="pegRNA Type", yaxis_title="Editing Efficiency (%)")
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No entries with pegRNA/epegRNA type classification and efficiency data.")
 
         # --- Papers by year ---
         st.subheader("Papers by Year")
@@ -574,37 +707,39 @@ elif page == "Statistics":
             fig = px.bar(org_df, x="Organism", y="Count", title="Top 15 Target Organisms")
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- PBS Length Distribution ---
+        # --- PBS Length Distribution (using SQL aggregation) ---
         st.subheader("PBS Length Distribution")
-        pbs_rows = (
-            session.query(PegRNAEntry.pbs_length)
-            .filter(PegRNAEntry.pbs_length.isnot(None), PegRNAEntry.pbs_length > 0, PegRNAEntry.pbs_length < 50)
-            .limit(100000)
+        pbs_agg = (
+            session.query(PegRNAEntry.pbs_length, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.pbs_length.isnot(None), PegRNAEntry.pbs_length > 0, PegRNAEntry.pbs_length <= 50)
+            .group_by(PegRNAEntry.pbs_length)
+            .order_by(PegRNAEntry.pbs_length)
             .all()
         )
-        if pbs_rows:
-            pbs_df = pd.DataFrame(pbs_rows, columns=["pbs_length"])
-            fig = px.histogram(
-                pbs_df, x="pbs_length", nbins=30,
-                title=f"PBS Length Distribution ({len(pbs_rows):,} entries)",
-                labels={"pbs_length": "PBS Length (nt)"},
+        if pbs_agg:
+            pbs_df = pd.DataFrame(pbs_agg, columns=["PBS Length (nt)", "Count"])
+            total_pbs = pbs_df["Count"].sum()
+            fig = px.bar(
+                pbs_df, x="PBS Length (nt)", y="Count",
+                title=f"PBS Length Distribution ({total_pbs:,} entries)",
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- RTT Length Distribution ---
+        # --- RTT Length Distribution (using SQL aggregation) ---
         st.subheader("RTT Length Distribution")
-        rtt_rows = (
-            session.query(PegRNAEntry.rtt_length)
-            .filter(PegRNAEntry.rtt_length.isnot(None), PegRNAEntry.rtt_length > 0, PegRNAEntry.rtt_length < 100)
-            .limit(100000)
+        rtt_agg = (
+            session.query(PegRNAEntry.rtt_length, func.count(PegRNAEntry.id).label("count"))
+            .filter(PegRNAEntry.rtt_length.isnot(None), PegRNAEntry.rtt_length > 0, PegRNAEntry.rtt_length <= 100)
+            .group_by(PegRNAEntry.rtt_length)
+            .order_by(PegRNAEntry.rtt_length)
             .all()
         )
-        if rtt_rows:
-            rtt_df = pd.DataFrame(rtt_rows, columns=["rtt_length"])
-            fig = px.histogram(
-                rtt_df, x="rtt_length", nbins=40,
-                title=f"RTT Length Distribution ({len(rtt_rows):,} entries)",
-                labels={"rtt_length": "RTT Length (nt)"},
+        if rtt_agg:
+            rtt_df = pd.DataFrame(rtt_agg, columns=["RTT Length (nt)", "Count"])
+            total_rtt = rtt_df["Count"].sum()
+            fig = px.bar(
+                rtt_df, x="RTT Length (nt)", y="Count",
+                title=f"RTT Length Distribution ({total_rtt:,} entries)",
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -968,27 +1103,26 @@ elif page == "Submit Paper":
 elif page == "Export":
     st.title("Export Database")
 
-    export_format = st.selectbox("Format", ["CSV", "JSON"])
-    validated_export = st.checkbox("Validated entries only", value=False, key="export_validated")
+    st.markdown(
+        "Export the full database or use **Search & Browse** to filter and export a subset. "
+        "Search results can be exported as CSV, FASTA, or SnapGene-compatible GenBank format."
+    )
 
-    # Count entries without loading them all
+    export_format = st.selectbox("Format", ["CSV", "JSON"])
+
     from sqlalchemy import func as _func
-    if validated_export:
-        entry_count = session.query(_func.count(PegRNAEntry.id)).filter(PegRNAEntry.validated.is_(True)).scalar()
-    else:
-        entry_count = session.query(_func.count(PegRNAEntry.id)).scalar()
+    entry_count = session.query(_func.count(PegRNAEntry.id)).scalar()
 
     st.write(f"**{entry_count:,} entries** to export")
 
     if entry_count > 0 and st.button("Generate Export"):
         with st.spinner(f"Generating {export_format} export for {entry_count:,} entries..."):
-            # Use pd.read_sql for memory efficiency instead of loading all ORM objects
-            from sqlalchemy import create_engine, text
+            from sqlalchemy import text
             engine = session.get_bind()
 
             sql = """
                 SELECT
-                    e.entry_name, e.pegrna_type,
+                    e.id, e.entry_name, e.pegrna_type,
                     e.spacer_sequence, e.pbs_sequence, e.pbs_length,
                     e.rtt_sequence, e.rtt_length, e.extension_sequence,
                     e.three_prime_extension, e.full_sequence, e.nicking_sgrna_seq,
@@ -1001,9 +1135,6 @@ elif page == "Export":
                 FROM pegrna_entries e
                 LEFT JOIN papers p ON e.paper_id = p.id
             """
-            if validated_export:
-                sql += " WHERE e.validated = 1"
-
             df = pd.read_sql(text(sql), engine)
 
         if export_format == "CSV":
