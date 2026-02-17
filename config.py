@@ -11,6 +11,36 @@ DATA_DIR = BASE_DIR / "data"
 RAW_PAPERS_DIR = DATA_DIR / "raw_papers"
 DATABASE_PATH = BASE_DIR / os.getenv("DATABASE_PATH", "data/pegrna_database.db")
 
+# GitHub raw URL for the database (avoids HF Space LFS limits)
+GITHUB_DB_URL = "https://media.githubusercontent.com/media/JoeyRiepsaame/pegrna-db/master/data/pegrna_database.db"
+
+
+def _ensure_database():
+    """Download database from GitHub if not present locally."""
+    if DATABASE_PATH.exists():
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Try gzip fallback first
+    import gzip, shutil
+    _db_gz = DATABASE_PATH.with_suffix(".db.gz")
+    if _db_gz.exists():
+        print(f"Decompressing {_db_gz} -> {DATABASE_PATH} ...")
+        with gzip.open(_db_gz, "rb") as f_in, open(DATABASE_PATH, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        print(f"Done. Database size: {DATABASE_PATH.stat().st_size / 1024 / 1024:.1f} MB")
+        return
+    # Download from GitHub (LFS-hosted)
+    try:
+        import urllib.request
+        print(f"Downloading database from GitHub ({GITHUB_DB_URL})...")
+        urllib.request.urlretrieve(GITHUB_DB_URL, str(DATABASE_PATH))
+        print(f"Downloaded: {DATABASE_PATH} ({DATABASE_PATH.stat().st_size / 1024 / 1024:.1f} MB)")
+    except Exception as e:
+        print(f"WARNING: Could not download database: {e}")
+
+
+_ensure_database()
+
 # Ensure directories exist
 DATA_DIR.mkdir(exist_ok=True)
 RAW_PAPERS_DIR.mkdir(exist_ok=True)
