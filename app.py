@@ -916,14 +916,15 @@ elif page == "Submit Paper":
         )
 
     st.markdown(
-        "Enter PMIDs, DOIs, or PubMed/Nature/PMC URLs to extract pegRNA data. "
-        "One identifier per line."
+        "Enter PMIDs, DOIs, or **any publisher URL** to extract pegRNA data. "
+        "One identifier per line. Supports Nature, MDPI, Cell, Wiley, Science, "
+        "bioRxiv, Springer, Frontiers, PLOS, and more."
     )
 
     input_text = st.text_area(
         "Paper Identifiers",
         height=150,
-        placeholder="34608327\nhttps://www.nature.com/articles/s41586-024-07259-6\n10.1038/s41587-022-01613-7",
+        placeholder="34608327\nhttps://www.mdpi.com/2073-4425/13/12/2348\nhttps://www.nature.com/articles/s41586-024-07259-6\n10.1038/s41587-022-01613-7",
     )
 
     method = st.selectbox("Extraction Method", ["auto", "rule", "llm"])
@@ -960,6 +961,13 @@ elif page == "Submit Paper":
                             pmids.append(pmid)
                         else:
                             log_area.warning(f"Could not resolve: {ident}")
+                    elif parsed["type"] == "url":
+                        log_area.info(f"Fetching DOI from URL: {ident[:80]}...")
+                        pmid = resolve_to_pmid(parsed)
+                        if pmid:
+                            pmids.append(pmid)
+                        else:
+                            log_area.warning(f"Could not extract DOI from URL: {ident}")
                     else:
                         log_area.warning(f"Unrecognized: {ident}")
 
