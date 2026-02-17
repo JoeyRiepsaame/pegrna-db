@@ -97,6 +97,8 @@ def search_entries(
     target_organism: Optional[str] = None,
     editing_technology: Optional[str] = None,
     validated_only: bool = False,
+    pmid: Optional[str] = None,
+    author: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_desc: bool = False,
     limit: int = 100,
@@ -105,6 +107,13 @@ def search_entries(
     """Search pegRNA entries with filters and sorting."""
     from sqlalchemy import or_
     query = session.query(PegRNAEntry)
+
+    if pmid or author:
+        query = query.join(Paper, PegRNAEntry.paper_id == Paper.id)
+    if pmid:
+        query = query.filter(Paper.pmid == pmid.strip())
+    if author:
+        query = query.filter(Paper.authors.ilike(f"%{author}%"))
 
     if target_gene:
         query = query.filter(PegRNAEntry.target_gene.ilike(f"%{target_gene}%"))

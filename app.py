@@ -123,7 +123,14 @@ if page == "Search & Browse":
     with col9:
         organism_filter = st.text_input("Organism", placeholder="e.g., Human, Mouse", key="filter_organism")
 
-    # Row 3: validated + ClinVar filter + sorting
+    # Filters - Row 3: PMID + Author
+    col_pmid, col_author = st.columns(2)
+    with col_pmid:
+        pmid_filter = st.text_input("PMID", placeholder="e.g., 36553615", key="filter_pmid")
+    with col_author:
+        author_filter = st.text_input("Author", placeholder="e.g., Anzalone, Chen", key="filter_author")
+
+    # Row 4: validated + ClinVar filter + sorting
     col_v, col_cv, col_sort, col_order = st.columns(4)
     with col_v:
         validated_only = st.checkbox("Validated entries only", key="filter_validated")
@@ -197,6 +204,13 @@ if page == "Search & Browse":
     # Build count query with all filters
     from database.models import PegRNAEntry as _PE
     count_query = session.query(_PE)
+    if pmid_filter or author_filter:
+        from database.models import Paper as _P
+        count_query = count_query.join(_P, _PE.paper_id == _P.id)
+    if pmid_filter:
+        count_query = count_query.filter(_P.pmid == pmid_filter.strip())
+    if author_filter:
+        count_query = count_query.filter(_P.authors.ilike(f"%{author_filter}%"))
     if gene_filter:
         count_query = count_query.filter(_PE.target_gene.ilike(f"%{gene_filter}%"))
     if edit_type_filter != "All":
@@ -263,6 +277,8 @@ if page == "Search & Browse":
         target_organism=organism_filter or None,
         editing_technology=tech_filter if tech_filter != "All" else None,
         validated_only=validated_only,
+        pmid=pmid_filter or None,
+        author=author_filter or None,
         sort_by=sort_by,
         sort_desc=sort_desc,
         limit=page_size,
