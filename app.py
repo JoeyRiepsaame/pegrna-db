@@ -16,6 +16,10 @@ import config
 from database.models import init_db, Paper, PegRNAEntry
 from database.operations import search_entries, get_stats, sequence_search
 
+def strip_html(text: str) -> str:
+    """Strip HTML tags from text (e.g., <i>in vivo</i> -> in vivo)."""
+    return re.sub(r"<[^>]+>", "", text) if text else text
+
 # SpCas9 scaffold (tracrRNA) used for full pegRNA sequence reconstruction
 SCAFFOLD = "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC"
 
@@ -329,7 +333,7 @@ if page == "Search & Browse":
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
-                "Paper Title": (e.paper.title[:60] + "...") if e.paper and e.paper.title and len(e.paper.title) > 60 else (e.paper.title if e.paper and e.paper.title else "-"),
+                "Paper Title": (strip_html(e.paper.title)[:60] + "...") if e.paper and e.paper.title and len(strip_html(e.paper.title)) > 60 else (strip_html(e.paper.title) if e.paper and e.paper.title else "-"),
             }
             if _has_clinvar:
                 row["ClinVar"] = clinvar_counts.get(e.id, 0)
@@ -540,13 +544,18 @@ if page == "Search & Browse":
 
                     if entry.paper:
                         st.markdown("**Source**")
-                        st.write(f"{entry.paper.title}")
-                        st.write(f"{entry.paper.authors}")
-                        st.write(f"{entry.paper.journal} ({entry.paper.year})")
+                        st.write(strip_html(entry.paper.title or ""))
+                        st.write(strip_html(entry.paper.authors or ""))
+                        st.write(f"{entry.paper.journal or 'N/A'} ({entry.paper.year or 'N/A'})")
+                        links = []
                         if entry.paper.pmid:
-                            st.markdown(
-                                f"[PubMed](https://pubmed.ncbi.nlm.nih.gov/{entry.paper.pmid}/)"
-                            )
+                            links.append(f"[PubMed](https://pubmed.ncbi.nlm.nih.gov/{entry.paper.pmid}/)")
+                        if entry.paper.pmcid:
+                            links.append(f"[PMC](https://pmc.ncbi.nlm.nih.gov/articles/{entry.paper.pmcid}/)")
+                        if entry.paper.doi:
+                            links.append(f"[DOI](https://doi.org/{entry.paper.doi})")
+                        if links:
+                            st.markdown(" | ".join(links))
     else:
         st.info("No entries match your filters. Try broadening your search.")
 
