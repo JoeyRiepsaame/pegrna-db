@@ -84,7 +84,7 @@ EXTENSION_PATTERNS = [
 ]
 EFFICIENCY_PATTERNS = [
     "editing_efficiency", "efficiency", "edit_eff", "pe_efficiency",
-    "percent_editing", "% editing", "editing (%)", "editing rate",
+    "percent_editing", "percentage_editing", "% editing", "editing (%)", "editing rate",
     "averageedited", "percentageedited",
 ]
 EDIT_TYPE_PATTERNS = [
