@@ -123,12 +123,14 @@ if page == "Search & Browse":
     with col9:
         organism_filter = st.text_input("Organism", placeholder="e.g., Human, Mouse", key="filter_organism")
 
-    # Filters - Row 3: PMID + Author
-    col_pmid, col_author = st.columns(2)
+    # Filters - Row 3: PMID + Author + Paper Title
+    col_pmid, col_author, col_title = st.columns(3)
     with col_pmid:
         pmid_filter = st.text_input("PMID", placeholder="e.g., 36553615", key="filter_pmid")
     with col_author:
         author_filter = st.text_input("Author", placeholder="e.g., Anzalone, Chen", key="filter_author")
+    with col_title:
+        title_filter = st.text_input("Paper Title", placeholder="e.g., prime editing, high-throughput", key="filter_title")
 
     # Row 4: validated + ClinVar filter + sorting
     col_v, col_cv, col_sort, col_order = st.columns(4)
@@ -204,13 +206,15 @@ if page == "Search & Browse":
     # Build count query with all filters
     from database.models import PegRNAEntry as _PE
     count_query = session.query(_PE)
-    if pmid_filter or author_filter:
+    if pmid_filter or author_filter or title_filter:
         from database.models import Paper as _P
         count_query = count_query.join(_P, _PE.paper_id == _P.id)
     if pmid_filter:
         count_query = count_query.filter(_P.pmid == pmid_filter.strip())
     if author_filter:
         count_query = count_query.filter(_P.authors.ilike(f"%{author_filter}%"))
+    if title_filter:
+        count_query = count_query.filter(_P.title.ilike(f"%{title_filter}%"))
     if gene_filter:
         count_query = count_query.filter(_PE.target_gene.ilike(f"%{gene_filter}%"))
     if edit_type_filter != "All":
@@ -279,6 +283,7 @@ if page == "Search & Browse":
         validated_only=validated_only,
         pmid=pmid_filter or None,
         author=author_filter or None,
+        paper_title=title_filter or None,
         sort_by=sort_by,
         sort_desc=sort_desc,
         limit=page_size,
@@ -324,6 +329,7 @@ if page == "Search & Browse":
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
+                "Paper Title": (e.paper.title[:60] + "...") if e.paper and e.paper.title and len(e.paper.title) > 60 else (e.paper.title if e.paper and e.paper.title else "-"),
             }
             if _has_clinvar:
                 row["ClinVar"] = clinvar_counts.get(e.id, 0)
