@@ -341,6 +341,11 @@ def _process_single_paper(session, paper, force_method: str = "auto"):
     if not paper_text and paper.pmcid:
         paper_text = fetch_full_text_html(paper.pmcid) or ""
 
+    # Step 1c: Abstract fallback when no full text available
+    if not paper_text and paper.abstract:
+        paper_text = f"Title: {paper.title or ''}\n\nAbstract: {paper.abstract}"
+        console.print("[yellow]No full text available, using abstract for LLM extraction[/yellow]")
+
     # Step 2: Try supplementary materials (rule-based)
     if paper.pmcid and force_method in ("auto", "rule"):
         supp_files = list_supplementary_files(paper.pmcid)
@@ -459,11 +464,17 @@ def batch(
 
     REVIEW_KEYWORDS = [
         "review", "perspective", "commentary", "editorial", "meta-analysis",
-        "protocol", "methods only",
+        "methods only",
     ]
     EXPERIMENTAL_INDICATORS = [
         "we designed", "we tested", "we constructed", "we demonstrated",
         "editing efficiency", "we generated", "we performed",
+        "we developed", "we optimized", "we applied", "we screened",
+        "we achieved", "we corrected", "we established", "we validated",
+        "pegRNA", "epegRNA", "editing rate", "indel", "prime edit",
+        "HEK293", "U2OS", "K562", "iPSC", "fibroblast",
+        "transfect", "electropor", "lentivir", "plasmid",
+        "supplementary table", "supplementary data",
     ]
 
     session = get_session()
@@ -473,6 +484,9 @@ def batch(
         '"prime editing" AND (pegRNA OR epegRNA OR "prime editing guide RNA")',
         '"prime editing" AND (efficiency OR screen) AND (pegRNA OR guide)',
         '"prime editor" AND (PE2 OR PE3 OR PEmax OR PE5) AND pegRNA',
+        '"prime editing" AND (spacer OR "guide RNA" OR "protospacer") AND efficiency',
+        '"prime editing" AND (PRIDICT OR PrimeDesign OR PEGG OR pegLIT OR PE-Designer)',
+        '"prime editing" AND ("high-throughput" OR "library" OR "saturation") AND screen',
     ]
 
     all_pmids = set()
@@ -495,13 +509,13 @@ def batch(
     papers_data = fetch_paper_metadata(new_pmids)
     console.print(f"Fetched metadata for {len(papers_data)} papers")
 
-    # Filter reviews
+    # Filter reviews (no longer skip papers without PMCID - use abstract fallback)
     experimental = []
     skipped = 0
+    no_pmcid_count = 0
     for pd in papers_data:
         if not pd.get("pmcid"):
-            skipped += 1
-            continue
+            no_pmcid_count += 1
         if skip_reviews:
             combined = ((pd.get("title") or "") + " " + (pd.get("abstract") or "")).lower()
             is_review = any(kw in combined for kw in REVIEW_KEYWORDS)
@@ -511,7 +525,7 @@ def batch(
                 continue
         experimental.append(pd)
 
-    console.print(f"After filtering: {len(experimental)} experimental papers ({skipped} skipped)")
+    console.print(f"After filtering: {len(experimental)} experimental papers ({skipped} skipped, {no_pmcid_count} without PMCID)")
 
     if dry_run:
         for pd in experimental:

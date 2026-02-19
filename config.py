@@ -77,7 +77,7 @@ UNPAYWALL_EMAIL = NCBI_EMAIL
 CLINVAR_FTP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz"
 CLINVAR_DATA_DIR = DATA_DIR / "clinvar"
 
-LLM_MODEL = "claude-sonnet-4-5-20250929"
+LLM_MODEL = "claude-sonnet-4-6"
 LLM_MAX_TOKENS = 8192
 
 # Column name patterns for rule-based extraction (case-insensitive)
