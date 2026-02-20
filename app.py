@@ -136,8 +136,10 @@ if page == "Search & Browse":
     with col_title:
         title_filter = st.text_input("Paper Title", placeholder="e.g., prime editing, high-throughput", key="filter_title")
 
-    # Row 4: validated + ClinVar filter + sorting
-    col_v, col_cv, col_sort, col_order = st.columns(4)
+    # Row 4: target region + validated + ClinVar filter + sorting
+    col_reg, col_v, col_cv, col_sort, col_order = st.columns(5)
+    with col_reg:
+        region_filter = st.selectbox("Target Region", ["All", "Exon", "Intron", "Splice site"], key="filter_region")
     with col_v:
         validated_only = st.checkbox("Validated entries only", key="filter_validated")
     with col_cv:
@@ -147,7 +149,7 @@ if page == "Search & Browse":
             clinvar_filter_options += ["Has ClinVar match", "Pathogenic match", "No ClinVar match"]
         clinvar_filter = st.selectbox("ClinVar Match", clinvar_filter_options, key="filter_clinvar")
     with col_sort:
-        sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version"], key="filter_sort")
+        sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version", "Target Region"], key="filter_sort")
     with col_order:
         sort_desc = st.checkbox("Descending", value=True, key="filter_sort_desc")
 
@@ -237,6 +239,8 @@ if page == "Search & Browse":
         count_query = count_query.filter(_PE.target_organism.ilike(f"%{organism_filter}%"))
     if validated_only:
         count_query = count_query.filter(_PE.validated.is_(True))
+    if region_filter != "All":
+        count_query = count_query.filter(_PE.target_region == region_filter)
     if tech_filter == "Prime Editing":
         from sqlalchemy import or_
         count_query = count_query.filter(or_(
@@ -285,6 +289,7 @@ if page == "Search & Browse":
         target_organism=organism_filter or None,
         editing_technology=tech_filter if tech_filter != "All" else None,
         validated_only=validated_only,
+        target_region=region_filter if region_filter != "All" else None,
         pmid=pmid_filter or None,
         author=author_filter or None,
         paper_title=title_filter or None,
@@ -329,6 +334,7 @@ if page == "Search & Browse":
                 "PBS": f"{e.pbs_length}nt" if e.pbs_length else "-",
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
                 "Edit": e.edit_type or "-",
+                "Region": e.target_region or "-",
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
@@ -505,6 +511,8 @@ if page == "Search & Browse":
                     with dcol2:
                         st.markdown("**Experimental Details**")
                         st.write(f"Target: {entry.target_gene} ({entry.target_organism or 'N/A'})")
+                        if entry.target_region:
+                            st.write(f"Target Region: {entry.target_region} ({entry.target_region_detail or ''})")
                         st.write(f"Edit: {entry.edit_type} - {entry.edit_description or 'N/A'}")
                         st.write(f"Prime Editor: {entry.prime_editor or 'N/A'}")
                         st.write(f"Cell Type: {entry.cell_type or 'N/A'}")
@@ -615,6 +623,26 @@ elif page == "Statistics":
             fig.update_traces(textposition="inside", textinfo="percent+label")
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
+
+        # --- Target Region distribution ---
+        st.subheader("Target Region Distribution")
+        region_counts = (
+            session.query(PegRNAEntry.target_region, func.count(PegRNAEntry.id))
+            .filter(PegRNAEntry.target_region.isnot(None))
+            .group_by(PegRNAEntry.target_region)
+            .all()
+        )
+        if region_counts:
+            reg_df = pd.DataFrame(region_counts, columns=["region", "count"])
+            fig = px.pie(
+                reg_df, names="region", values="count", title="Target Region (Exon / Intron / Splice site)",
+                hole=0.3,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No target region annotations yet. Run `python -m cli annotate-regions` to annotate entries.")
 
         # --- Efficiency distribution ---
         st.subheader("Editing Efficiency Distribution")
@@ -794,6 +822,7 @@ elif page == "Statistics":
             ("editing_efficiency", "Efficiency"),
             ("nicking_sgrna_seq", "Nick sgRNA"),
             ("three_prime_extension", "3' Extension"),
+            ("target_region", "Target Region"),
         ]
         completeness = []
         for col_name, label in fields:

@@ -44,6 +44,7 @@ class PegRNAEntry(Base):
         Index("ix_pegrna_delivery_method", "delivery_method"),
         Index("ix_pegrna_pbs_length", "pbs_length"),
         Index("ix_pegrna_rtt_length", "rtt_length"),
+        Index("ix_pegrna_target_region", "target_region"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -69,6 +70,8 @@ class PegRNAEntry(Base):
     target_gene = Column(Text, nullable=True)
     target_locus = Column(Text, nullable=True)  # genomic coordinates
     target_organism = Column(Text, nullable=True)
+    target_region = Column(Text, nullable=True)  # Exon / Intron / Splice site
+    target_region_detail = Column(Text, nullable=True)  # e.g. "Exon 5 of 12"
 
     # Edit
     edit_type = Column(Text, nullable=True)  # substitution/insertion/deletion/combination
@@ -97,6 +100,28 @@ class PegRNAEntry(Base):
             f"<PegRNAEntry(id={self.id}, gene={self.target_gene}, "
             f"type={self.pegrna_type}, eff={self.editing_efficiency})>"
         )
+
+
+class GeneStructure(Base):
+    """Cache table for Ensembl gene structures (exon/intron boundaries)."""
+    __tablename__ = "gene_structures"
+    __table_args__ = (
+        Index("ix_gene_struct_lookup", "gene_symbol", "organism"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    gene_symbol = Column(Text, nullable=False)
+    organism = Column(Text, nullable=False)
+    ensembl_gene_id = Column(Text, nullable=True)
+    ensembl_transcript_id = Column(Text, nullable=True)
+    chromosome = Column(Text, nullable=True)
+    strand = Column(Integer, nullable=True)
+    gene_start = Column(Integer, nullable=True)
+    gene_end = Column(Integer, nullable=True)
+    exon_coordinates = Column(Text, nullable=True)  # JSON: [[start, end], ...]
+    gene_sequence = Column(Text, nullable=True)
+    fetch_date = Column(DateTime, nullable=True)
+    fetch_status = Column(Text, default="pending")  # pending/success/not_found/error
 
 
 class ClinVarVariant(Base):
@@ -154,22 +179,29 @@ def init_db(db_path: str) -> sessionmaker:
     engine = create_engine(f"sqlite:///{db_path}", echo=False)
     Base.metadata.create_all(engine)
 
-    # Migration: add extension_sequence column if missing
+    # Migrations: add columns if missing
     from sqlalchemy import text, inspect
     insp = inspect(engine)
     if "pegrna_entries" in insp.get_table_names():
         cols = [c["name"] for c in insp.get_columns("pegrna_entries")]
-        if "extension_sequence" not in cols:
-            with engine.begin() as conn:
+        with engine.begin() as conn:
+            if "extension_sequence" not in cols:
                 conn.execute(text(
                     "ALTER TABLE pegrna_entries ADD COLUMN extension_sequence TEXT"
                 ))
-                # Back-fill from existing RTT + PBS
                 conn.execute(text("""
                     UPDATE pegrna_entries
                     SET extension_sequence = rtt_sequence || pbs_sequence
                     WHERE rtt_sequence IS NOT NULL
                       AND pbs_sequence IS NOT NULL
                 """))
+            if "target_region" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE pegrna_entries ADD COLUMN target_region TEXT"
+                ))
+            if "target_region_detail" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE pegrna_entries ADD COLUMN target_region_detail TEXT"
+                ))
 
     return sessionmaker(bind=engine)

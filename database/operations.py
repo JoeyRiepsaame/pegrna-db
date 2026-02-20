@@ -97,6 +97,7 @@ def search_entries(
     target_organism: Optional[str] = None,
     editing_technology: Optional[str] = None,
     validated_only: bool = False,
+    target_region: Optional[str] = None,
     pmid: Optional[str] = None,
     author: Optional[str] = None,
     paper_title: Optional[str] = None,
@@ -147,6 +148,8 @@ def search_entries(
         ))
     if validated_only:
         query = query.filter(PegRNAEntry.validated.is_(True))
+    if target_region:
+        query = query.filter(PegRNAEntry.target_region == target_region)
 
     # Sorting
     sort_map = {
@@ -154,6 +157,7 @@ def search_entries(
         "Gene": PegRNAEntry.target_gene,
         "Edit Type": PegRNAEntry.edit_type,
         "PE Version": PegRNAEntry.prime_editor,
+        "Target Region": PegRNAEntry.target_region,
     }
     if sort_by and sort_by in sort_map:
         col = sort_map[sort_by]

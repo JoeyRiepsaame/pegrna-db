@@ -77,6 +77,11 @@ UNPAYWALL_EMAIL = NCBI_EMAIL
 CLINVAR_FTP_URL = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz"
 CLINVAR_DATA_DIR = DATA_DIR / "clinvar"
 
+# Ensembl API
+ENSEMBL_REST_SERVER = "https://rest.ensembl.org"
+ENSEMBL_GENOMES_REST_SERVER = "https://rest.ensemblgenomes.org"
+SPLICE_SITE_WINDOW = 2  # bp window around exon boundaries
+
 LLM_MODEL = "claude-sonnet-4-6"
 LLM_MAX_TOKENS = 8192
 

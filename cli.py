@@ -786,5 +786,120 @@ def fix_sequences(
     session.close()
 
 
+@app.command(name="annotate-regions")
+def annotate_regions(
+    organism: Optional[str] = typer.Option(None, help="Filter by organism (e.g., 'Homo sapiens')"),
+    gene: Optional[str] = typer.Option(None, help="Annotate a specific gene only"),
+    limit: int = typer.Option(0, "--limit", "-l", help="Max genes to annotate (0=all)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without saving"),
+    batch_size: int = typer.Option(100, "--batch-size", help="Genes per Ensembl API batch"),
+):
+    """Annotate pegRNA entries with exon/intron target region using Ensembl gene structures."""
+    from database.models import PegRNAEntry, GeneStructure
+    from database.ensembl import batch_fetch_gene_structures, ORGANISM_MAP
+    from database.annotate_region import annotate_entries_for_gene
+    from sqlalchemy import func, distinct
+
+    session = get_session()
+
+    # Find distinct (gene, organism) pairs needing annotation
+    query = (
+        session.query(
+            PegRNAEntry.target_gene,
+            PegRNAEntry.target_organism,
+            func.count(PegRNAEntry.id).label("cnt"),
+        )
+        .filter(
+            PegRNAEntry.target_region.is_(None),
+            PegRNAEntry.spacer_sequence.isnot(None),
+            PegRNAEntry.target_gene.isnot(None),
+            PegRNAEntry.target_organism.isnot(None),
+        )
+        .group_by(PegRNAEntry.target_gene, PegRNAEntry.target_organism)
+    )
+
+    if organism:
+        query = query.filter(PegRNAEntry.target_organism.ilike(f"%{organism}%"))
+    if gene:
+        query = query.filter(PegRNAEntry.target_gene == gene)
+
+    gene_org_pairs = query.all()
+    console.print(f"Found {len(gene_org_pairs)} gene-organism pairs to annotate")
+
+    if not gene_org_pairs:
+        console.print("[green]All entries already annotated[/green]")
+        session.close()
+        return
+
+    # Group by organism for efficient batch fetching
+    org_genes = {}
+    for g, o, cnt in gene_org_pairs:
+        org_genes.setdefault(o, []).append((g, cnt))
+
+    total_annotated = 0
+    total_not_found = 0
+    total_genes_processed = 0
+    genes_limit = limit if limit > 0 else 999999999
+
+    for org, genes_list in org_genes.items():
+        # Check if organism is supported
+        org_supported = any(k.lower() == org.lower() for k in ORGANISM_MAP)
+        if not org_supported:
+            console.print(f"[yellow]Skipping unsupported organism: {org} ({len(genes_list)} genes)[/yellow]")
+            continue
+
+        gene_names = [g for g, _ in genes_list]
+        total_entries = sum(cnt for _, cnt in genes_list)
+        console.print(f"\n[bold]{org}[/bold]: {len(gene_names)} genes, {total_entries:,} entries")
+
+        # Process in batches
+        for i in range(0, len(gene_names), batch_size):
+            if total_genes_processed >= genes_limit:
+                break
+
+            batch = gene_names[i:i + batch_size]
+            remaining = int(genes_limit - total_genes_processed)
+            if remaining < len(batch):
+                batch = batch[:remaining]
+
+            console.print(f"  Fetching gene structures {i+1}-{i+len(batch)} of {len(gene_names)}...")
+            structures = batch_fetch_gene_structures(session, batch, org)
+            session.commit()
+
+            found = len(structures)
+            console.print(f"  Found {found}/{len(batch)} genes in Ensembl")
+
+            for sym in batch:
+                gs = structures.get(sym)
+                if not gs:
+                    continue
+
+                annotated, nf, _ = annotate_entries_for_gene(session, sym, gs, dry_run=dry_run)
+                total_annotated += annotated
+                total_not_found += nf
+                total_genes_processed += 1
+
+            if not dry_run:
+                session.commit()
+            else:
+                session.rollback()
+
+            # Progress
+            console.print(
+                f"  [green]Annotated: {total_annotated:,}[/green] | "
+                f"[yellow]Spacer not found: {total_not_found:,}[/yellow] | "
+                f"Genes: {total_genes_processed}"
+            )
+
+    console.print(f"\n[bold green]Annotation complete![/bold green]")
+    console.print(f"  Total annotated: {total_annotated:,}")
+    console.print(f"  Spacer not mapped: {total_not_found:,}")
+    console.print(f"  Genes processed: {total_genes_processed}")
+    if dry_run:
+        console.print("[yellow]Dry run — no changes committed[/yellow]")
+
+    session.close()
+
+
 if __name__ == "__main__":
     app()
