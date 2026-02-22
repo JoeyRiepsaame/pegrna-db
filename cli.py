@@ -901,5 +901,50 @@ def annotate_regions(
     session.close()
 
 
+@app.command(name="annotate-lof")
+def annotate_lof(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without saving"),
+    force: bool = typer.Option(False, "--force", help="Re-classify already-annotated entries"),
+    batch_size: int = typer.Option(5000, "--batch-size", help="Commit batch size"),
+):
+    """Classify pegRNA entries by functional effect (Loss-of-Function).
+
+    Uses HGVS notation (Ter/fs patterns), target region (Splice site),
+    and edit description keywords (KO, LoF) to classify entries as:
+    Nonsense, Frameshift, Splice disruption, or Knockout.
+    """
+    from database.annotate_lof import annotate_lof_entries
+
+    Session = init_db(str(config.DATABASE_PATH))
+    session = Session()
+
+    console.print("[bold]Classifying functional effects (Loss-of-Function)...[/bold]")
+
+    counts = annotate_lof_entries(
+        session,
+        batch_size=batch_size,
+        dry_run=dry_run,
+        force=force,
+    )
+
+    if not dry_run:
+        session.commit()
+
+    classified = counts["total"] - counts["skipped"]
+    console.print(f"\n[bold green]Annotation complete![/bold green]")
+    console.print(f"  Total entries processed: {counts['total']:,}")
+    console.print(f"  Nonsense (stop codon):   {counts['Nonsense']:,}")
+    console.print(f"  Frameshift:              {counts['Frameshift']:,}")
+    console.print(f"  Splice disruption:       {counts['Splice disruption']:,}")
+    console.print(f"  Knockout (annotated):    {counts['Knockout']:,}")
+    console.print(f"  [bold]Total classified as LoF: {classified:,}[/bold]")
+    console.print(f"  Not LoF (skipped):       {counts['skipped']:,}")
+
+    if dry_run:
+        console.print("[yellow]Dry run — no changes committed[/yellow]")
+
+    session.close()
+
+
 if __name__ == "__main__":
     app()

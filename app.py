@@ -136,10 +136,12 @@ if page == "Search & Browse":
     with col_title:
         title_filter = st.text_input("Paper Title", placeholder="e.g., prime editing, high-throughput", key="filter_title")
 
-    # Row 4: target region + validated + ClinVar filter + sorting
-    col_reg, col_v, col_cv, col_sort, col_order = st.columns(5)
+    # Row 4: target region + functional effect + validated + ClinVar filter + sorting
+    col_reg, col_lof, col_v, col_cv, col_sort, col_order = st.columns(6)
     with col_reg:
         region_filter = st.selectbox("Target Region", ["All", "Exon", "Intron", "Splice site"], key="filter_region")
+    with col_lof:
+        lof_filter = st.selectbox("Functional Effect", ["All", "Any LoF", "Nonsense", "Frameshift", "Splice disruption", "Knockout"], key="filter_lof")
     with col_v:
         validated_only = st.checkbox("Validated entries only", key="filter_validated")
     with col_cv:
@@ -149,7 +151,7 @@ if page == "Search & Browse":
             clinvar_filter_options += ["Has ClinVar match", "Pathogenic match", "No ClinVar match"]
         clinvar_filter = st.selectbox("ClinVar Match", clinvar_filter_options, key="filter_clinvar")
     with col_sort:
-        sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version", "Target Region"], key="filter_sort")
+        sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version", "Target Region", "Functional Effect"], key="filter_sort")
     with col_order:
         sort_desc = st.checkbox("Descending", value=True, key="filter_sort_desc")
 
@@ -241,6 +243,11 @@ if page == "Search & Browse":
         count_query = count_query.filter(_PE.validated.is_(True))
     if region_filter != "All":
         count_query = count_query.filter(_PE.target_region == region_filter)
+    if lof_filter != "All":
+        if lof_filter == "Any LoF":
+            count_query = count_query.filter(_PE.functional_effect.isnot(None))
+        else:
+            count_query = count_query.filter(_PE.functional_effect == lof_filter)
     if tech_filter == "Prime Editing":
         from sqlalchemy import or_
         count_query = count_query.filter(or_(
@@ -290,6 +297,7 @@ if page == "Search & Browse":
         editing_technology=tech_filter if tech_filter != "All" else None,
         validated_only=validated_only,
         target_region=region_filter if region_filter != "All" else None,
+        functional_effect=lof_filter if lof_filter != "All" else None,
         pmid=pmid_filter or None,
         author=author_filter or None,
         paper_title=title_filter or None,
@@ -335,6 +343,7 @@ if page == "Search & Browse":
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
                 "Edit": e.edit_type or "-",
                 "Region": e.target_region or "-",
+                "LoF": e.functional_effect or "-",
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
@@ -513,6 +522,8 @@ if page == "Search & Browse":
                         st.write(f"Target: {entry.target_gene} ({entry.target_organism or 'N/A'})")
                         if entry.target_region:
                             st.write(f"Target Region: {entry.target_region} ({entry.target_region_detail or ''})")
+                        if entry.functional_effect:
+                            st.write(f"Functional Effect: {entry.functional_effect} ({entry.functional_effect_detail or ''})")
                         st.write(f"Edit: {entry.edit_type} - {entry.edit_description or 'N/A'}")
                         st.write(f"Prime Editor: {entry.prime_editor or 'N/A'}")
                         st.write(f"Cell Type: {entry.cell_type or 'N/A'}")
@@ -643,6 +654,27 @@ elif page == "Statistics":
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No target region annotations yet. Run `python -m cli annotate-regions` to annotate entries.")
+
+        # --- Functional Effect distribution ---
+        st.subheader("Functional Effect Distribution (Loss-of-Function)")
+        lof_counts = (
+            session.query(PegRNAEntry.functional_effect, func.count(PegRNAEntry.id))
+            .filter(PegRNAEntry.functional_effect.isnot(None))
+            .group_by(PegRNAEntry.functional_effect)
+            .all()
+        )
+        if lof_counts:
+            lof_df = pd.DataFrame(lof_counts, columns=["effect", "count"])
+            fig = px.pie(
+                lof_df, names="effect", values="count",
+                title="Functional Effect Classification (LoF entries only)",
+                hole=0.3,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No functional effect annotations yet. Run `python -m cli annotate-lof` to classify entries.")
 
         # --- Efficiency distribution ---
         st.subheader("Editing Efficiency Distribution")
@@ -823,6 +855,7 @@ elif page == "Statistics":
             ("nicking_sgrna_seq", "Nick sgRNA"),
             ("three_prime_extension", "3' Extension"),
             ("target_region", "Target Region"),
+            ("functional_effect", "Functional Effect"),
         ]
         completeness = []
         for col_name, label in fields:

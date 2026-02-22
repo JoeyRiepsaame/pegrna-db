@@ -45,6 +45,7 @@ class PegRNAEntry(Base):
         Index("ix_pegrna_pbs_length", "pbs_length"),
         Index("ix_pegrna_rtt_length", "rtt_length"),
         Index("ix_pegrna_target_region", "target_region"),
+        Index("ix_pegrna_functional_effect", "functional_effect"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -72,6 +73,8 @@ class PegRNAEntry(Base):
     target_organism = Column(Text, nullable=True)
     target_region = Column(Text, nullable=True)  # Exon / Intron / Splice site
     target_region_detail = Column(Text, nullable=True)  # e.g. "Exon 5 of 12"
+    functional_effect = Column(Text, nullable=True)  # Nonsense / Frameshift / Splice disruption / Knockout
+    functional_effect_detail = Column(Text, nullable=True)  # e.g. "Stop codon: p.Trp151Ter"
 
     # Edit
     edit_type = Column(Text, nullable=True)  # substitution/insertion/deletion/combination
@@ -203,5 +206,16 @@ def init_db(db_path: str) -> sessionmaker:
                 conn.execute(text(
                     "ALTER TABLE pegrna_entries ADD COLUMN target_region_detail TEXT"
                 ))
+            if "functional_effect" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE pegrna_entries ADD COLUMN functional_effect TEXT"
+                ))
+            if "functional_effect_detail" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE pegrna_entries ADD COLUMN functional_effect_detail TEXT"
+                ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_pegrna_functional_effect ON pegrna_entries(functional_effect)"
+            ))
 
     return sessionmaker(bind=engine)

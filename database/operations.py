@@ -98,6 +98,7 @@ def search_entries(
     editing_technology: Optional[str] = None,
     validated_only: bool = False,
     target_region: Optional[str] = None,
+    functional_effect: Optional[str] = None,
     pmid: Optional[str] = None,
     author: Optional[str] = None,
     paper_title: Optional[str] = None,
@@ -150,6 +151,11 @@ def search_entries(
         query = query.filter(PegRNAEntry.validated.is_(True))
     if target_region:
         query = query.filter(PegRNAEntry.target_region == target_region)
+    if functional_effect:
+        if functional_effect == "Any LoF":
+            query = query.filter(PegRNAEntry.functional_effect.isnot(None))
+        else:
+            query = query.filter(PegRNAEntry.functional_effect == functional_effect)
 
     # Sorting
     sort_map = {
@@ -158,6 +164,7 @@ def search_entries(
         "Edit Type": PegRNAEntry.edit_type,
         "PE Version": PegRNAEntry.prime_editor,
         "Target Region": PegRNAEntry.target_region,
+        "Functional Effect": PegRNAEntry.functional_effect,
     }
     if sort_by and sort_by in sort_map:
         col = sort_map[sort_by]
@@ -339,6 +346,9 @@ def get_stats(session: Session) -> dict:
     genes = session.query(func.count(distinct(PegRNAEntry.target_gene))).scalar()
     cell_types = session.query(func.count(distinct(PegRNAEntry.cell_type))).scalar()
     organisms = session.query(func.count(distinct(PegRNAEntry.target_organism))).scalar()
+    lof_entries = session.query(PegRNAEntry).filter(
+        PegRNAEntry.functional_effect.isnot(None)
+    ).count()
 
     return {
         "total_papers": total_papers,
@@ -348,4 +358,5 @@ def get_stats(session: Session) -> dict:
         "unique_genes": genes,
         "unique_cell_types": cell_types,
         "unique_organisms": organisms,
+        "lof_entries": lof_entries,
     }
