@@ -1,2 +1,0 @@
-# System packages (if needed for HF Spaces)
-# Empty for now - all dependencies are Python packages
