@@ -3,7 +3,9 @@ title: pegRNA-DB
 emoji: 🧬
 colorFrom: blue
 colorTo: purple
-sdk: docker
+sdk: streamlit
+sdk_version: "1.42.0"
+app_file: app.py
 pinned: false
 license: mit
 ---
