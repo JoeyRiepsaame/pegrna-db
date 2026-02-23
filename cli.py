@@ -906,19 +906,26 @@ def annotate_lof(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without saving"),
     force: bool = typer.Option(False, "--force", help="Re-classify already-annotated entries"),
     batch_size: int = typer.Option(5000, "--batch-size", help="Commit batch size"),
+    computational: bool = typer.Option(False, "--computational", help="Run Phase 2: RTT-based stop codon detection"),
+    fetch_cds: bool = typer.Option(False, "--fetch-cds", help="Fetch CDS sequences from Ensembl before computational analysis"),
+    gene: Optional[str] = typer.Option(None, "--gene", help="Target a specific gene (computational mode)"),
+    organism: Optional[str] = typer.Option(None, "--organism", help="Filter by organism (computational mode)"),
 ):
     """Classify pegRNA entries by functional effect (Loss-of-Function).
 
-    Uses HGVS notation (Ter/fs patterns), target region (Splice site),
-    and edit description keywords (KO, LoF) to classify entries as:
-    Nonsense, Frameshift, Splice disruption, or Knockout.
+    Phase 1 (default): HGVS notation (Ter/fs patterns), target region,
+    and edit description keywords.
+
+    Phase 2 (--computational): Translate RTT sequences against gene CDS
+    to detect premature stop codons and frameshifts in coding exons.
     """
-    from database.annotate_lof import annotate_lof_entries
+    from database.annotate_lof import annotate_lof_entries, annotate_lof_computational
 
     Session = init_db(str(config.DATABASE_PATH))
     session = Session()
 
-    console.print("[bold]Classifying functional effects (Loss-of-Function)...[/bold]")
+    # Phase 1: Regex-based classification
+    console.print("[bold]Phase 1: Regex-based LoF classification...[/bold]")
 
     counts = annotate_lof_entries(
         session,
@@ -931,7 +938,7 @@ def annotate_lof(
         session.commit()
 
     classified = counts["total"] - counts["skipped"]
-    console.print(f"\n[bold green]Annotation complete![/bold green]")
+    console.print(f"\n[bold]Phase 1 results:[/bold]")
     console.print(f"  Total entries processed: {counts['total']:,}")
     console.print(f"  Nonsense (stop codon):   {counts['Nonsense']:,}")
     console.print(f"  Frameshift:              {counts['Frameshift']:,}")
@@ -940,8 +947,42 @@ def annotate_lof(
     console.print(f"  [bold]Total classified as LoF: {classified:,}[/bold]")
     console.print(f"  Not LoF (skipped):       {counts['skipped']:,}")
 
+    # Phase 2: Computational RTT-based detection
+    if computational:
+        # Optionally fetch CDS sequences first
+        if fetch_cds:
+            from database.ensembl import batch_fetch_cds_sequences
+            console.print(f"\n[bold]Fetching CDS sequences from Ensembl...[/bold]")
+            fetched = batch_fetch_cds_sequences(session, organism=organism)
+            if not dry_run:
+                session.commit()
+            console.print(f"  Fetched {fetched} CDS sequences")
+
+        console.print(f"\n[bold]Phase 2: Computational RTT-based stop codon detection...[/bold]")
+
+        comp_counts = annotate_lof_computational(
+            session,
+            batch_size=batch_size,
+            dry_run=dry_run,
+            gene=gene,
+            organism=organism,
+        )
+
+        if not dry_run:
+            session.commit()
+
+        comp_classified = comp_counts["Nonsense"] + comp_counts["Frameshift"]
+        console.print(f"\n[bold]Phase 2 results:[/bold]")
+        console.print(f"  Candidates (exon + RTT): {comp_counts['total']:,}")
+        console.print(f"  Nonsense (RTT-predicted):{comp_counts['Nonsense']:,}")
+        console.print(f"  Frameshift (RTT-pred.):  {comp_counts['Frameshift']:,}")
+        console.print(f"  [bold]Total new LoF found:   {comp_classified:,}[/bold]")
+        console.print(f"  No CDS available:        {comp_counts['no_cds']:,}")
+        console.print(f"  Errors:                  {comp_counts['errors']:,}")
+        console.print(f"  No effect detected:      {comp_counts['skipped']:,}")
+
     if dry_run:
-        console.print("[yellow]Dry run — no changes committed[/yellow]")
+        console.print("\n[yellow]Dry run — no changes committed[/yellow]")
 
     session.close()
 

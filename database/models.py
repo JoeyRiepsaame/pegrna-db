@@ -123,6 +123,7 @@ class GeneStructure(Base):
     gene_end = Column(Integer, nullable=True)
     exon_coordinates = Column(Text, nullable=True)  # JSON: [[start, end], ...]
     gene_sequence = Column(Text, nullable=True)
+    cds_sequence = Column(Text, nullable=True)  # Coding DNA sequence (ATG...stop)
     fetch_date = Column(DateTime, nullable=True)
     fetch_status = Column(Text, default="pending")  # pending/success/not_found/error
 
@@ -217,5 +218,13 @@ def init_db(db_path: str) -> sessionmaker:
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_pegrna_functional_effect ON pegrna_entries(functional_effect)"
             ))
+
+    if "gene_structures" in insp.get_table_names():
+        gs_cols = [c["name"] for c in insp.get_columns("gene_structures")]
+        with engine.begin() as conn:
+            if "cds_sequence" not in gs_cols:
+                conn.execute(text(
+                    "ALTER TABLE gene_structures ADD COLUMN cds_sequence TEXT"
+                ))
 
     return sessionmaker(bind=engine)

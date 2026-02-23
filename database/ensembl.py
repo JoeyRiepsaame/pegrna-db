@@ -146,6 +146,71 @@ def fetch_gene_sequence(ensembl_gene_id: str, server: str) -> Optional[str]:
     return None
 
 
+def fetch_cds_sequence(transcript_id: str, server: str) -> Optional[str]:
+    """Fetch the coding DNA sequence (CDS) of a transcript.
+
+    CDS is always returned 5'→3' in coding direction (ATG...stop),
+    regardless of genomic strand.
+    """
+    url = f"{server}/sequence/id/{transcript_id}?type=cds"
+    resp = _request_with_retry(url)
+    if resp:
+        data = resp.json()
+        return data.get("seq")
+    return None
+
+
+def batch_fetch_cds_sequences(
+    session: Session, organism: Optional[str] = None
+) -> int:
+    """Fetch CDS for all gene structures that have a transcript_id but no CDS cached.
+
+    Returns count of CDS sequences fetched.
+    """
+    query = (
+        session.query(GeneStructure)
+        .filter(
+            GeneStructure.fetch_status == "success",
+            GeneStructure.ensembl_transcript_id.isnot(None),
+            GeneStructure.cds_sequence.is_(None),
+        )
+    )
+    if organism:
+        query = query.filter(GeneStructure.organism.ilike(f"%{organism}%"))
+
+    genes = query.all()
+    if not genes:
+        console.print("[green]All gene structures already have CDS[/green]")
+        return 0
+
+    console.print(f"Fetching CDS for {len(genes)} genes...")
+    fetched = 0
+
+    for i, gs in enumerate(genes):
+        org_info = ORGANISM_MAP.get(gs.organism)
+        if not org_info:
+            for k, v in ORGANISM_MAP.items():
+                if k.lower() == gs.organism.lower():
+                    org_info = v
+                    break
+        if not org_info:
+            continue
+
+        _, server = org_info
+        cds = fetch_cds_sequence(gs.ensembl_transcript_id, server)
+        if cds:
+            gs.cds_sequence = cds
+            fetched += 1
+
+        if (i + 1) % 50 == 0:
+            session.flush()
+            console.print(f"  Fetched {fetched}/{i + 1}...")
+
+    session.flush()
+    console.print(f"[green]Fetched {fetched} CDS sequences[/green]")
+    return fetched
+
+
 def get_or_fetch_gene_structure(
     session: Session, gene_symbol: str, organism: str
 ) -> Optional[GeneStructure]:
