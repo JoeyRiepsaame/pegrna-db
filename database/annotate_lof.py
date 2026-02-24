@@ -336,19 +336,30 @@ def annotate_lof_computational(
 ) -> dict:
     """Phase 2: Computational LoF detection from RTT sequences.
 
-    Analyzes entries in coding exons that have RTT + spacer + gene but no
-    functional_effect annotation. Never overwrites existing values.
+    Analyzes entries in coding exons and splice sites that have RTT + spacer +
+    gene. Checks entries with no functional_effect AND entries already tagged as
+    "Splice disruption" (since splice-site guides can also introduce stop codons,
+    and Nonsense takes priority).
 
     Auto-fetches missing CDS sequences from Ensembl.
     """
+    from sqlalchemy import or_
     from database.ensembl import fetch_cds_sequence, ORGANISM_MAP
 
-    # Find candidate entries
+    # Find candidate entries: Exon OR Splice site, with RTT + spacer
+    # Include entries with no functional_effect OR "Splice disruption"
+    # (Nonsense from stop codon takes priority over Splice disruption)
     query = (
         session.query(PegRNAEntry)
         .filter(
-            PegRNAEntry.functional_effect.is_(None),
-            PegRNAEntry.target_region == "Exon",
+            or_(
+                PegRNAEntry.functional_effect.is_(None),
+                PegRNAEntry.functional_effect == "Splice disruption",
+            ),
+            or_(
+                PegRNAEntry.target_region == "Exon",
+                PegRNAEntry.target_region == "Splice site",
+            ),
             PegRNAEntry.rtt_sequence.isnot(None),
             PegRNAEntry.spacer_sequence.isnot(None),
             PegRNAEntry.target_gene.isnot(None),
@@ -361,7 +372,7 @@ def annotate_lof_computational(
         query = query.filter(PegRNAEntry.target_organism.ilike(f"%{organism}%"))
 
     entries = query.all()
-    console.print(f"  Candidates: {len(entries):,} entries in coding exons with RTT + spacer")
+    console.print(f"  Candidates: {len(entries):,} entries in exons/splice sites with RTT + spacer")
 
     # Group by (gene, organism)
     gene_entries: dict[tuple[str, str], list] = {}
@@ -374,6 +385,7 @@ def annotate_lof_computational(
     counts = {
         "Nonsense": 0,
         "Frameshift": 0,
+        "upgraded_from_splice": 0,
         "skipped": 0,
         "no_cds": 0,
         "errors": 0,
@@ -419,6 +431,9 @@ def annotate_lof_computational(
                 )
                 if category:
                     counts[category] = counts.get(category, 0) + 1
+                    # Track upgrades from Splice disruption → Nonsense
+                    if entry.functional_effect == "Splice disruption" and category == "Nonsense":
+                        counts["upgraded_from_splice"] += 1
                     if not dry_run:
                         entry.functional_effect = category
                         entry.functional_effect_detail = detail
