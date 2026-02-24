@@ -141,7 +141,7 @@ if page == "Search & Browse":
     with col_reg:
         region_filter = st.selectbox("Target Region", ["All", "Exon", "Intron", "Splice site"], key="filter_region")
     with col_lof:
-        lof_filter = st.selectbox("Functional Effect", ["All", "Any LoF", "Nonsense", "Frameshift", "Splice disruption", "Knockout"], key="filter_lof")
+        lof_filter = st.selectbox("Functional Effect", ["All", "Any LoF", "Nonsense (Stop Codon *)", "Frameshift", "Splice disruption", "Knockout"], key="filter_lof")
     with col_v:
         validated_only = st.checkbox("Validated entries only", key="filter_validated")
     with col_cv:
@@ -154,6 +154,15 @@ if page == "Search & Browse":
         sort_by = st.selectbox("Sort by", [None, "Efficiency", "Gene", "Edit Type", "PE Version", "Target Region", "Functional Effect"], key="filter_sort")
     with col_order:
         sort_desc = st.checkbox("Descending", value=True, key="filter_sort_desc")
+
+    # Row 5: Stop Codon detection method filter
+    col_det, _ = st.columns([2, 4])
+    with col_det:
+        detection_filter = st.selectbox(
+            "Stop Codon Detection Method",
+            ["All", "Paper-annotated", "RTT-predicted (computational)"],
+            key="filter_detection",
+        )
 
     # --- Sequence Search ---
     with st.expander("Sequence Search (find similar pegRNAs by DNA sequence)", expanded=False):
@@ -243,11 +252,16 @@ if page == "Search & Browse":
         count_query = count_query.filter(_PE.validated.is_(True))
     if region_filter != "All":
         count_query = count_query.filter(_PE.target_region == region_filter)
+    # Map UI label to DB value
+    _lof_db_value = lof_filter
+    if lof_filter == "Nonsense (Stop Codon *)":
+        _lof_db_value = "Nonsense"
+
     if lof_filter != "All":
         if lof_filter == "Any LoF":
             count_query = count_query.filter(_PE.functional_effect.isnot(None))
         else:
-            count_query = count_query.filter(_PE.functional_effect == lof_filter)
+            count_query = count_query.filter(_PE.functional_effect == _lof_db_value)
     if tech_filter == "Prime Editing":
         from sqlalchemy import or_
         count_query = count_query.filter(or_(
@@ -297,7 +311,7 @@ if page == "Search & Browse":
         editing_technology=tech_filter if tech_filter != "All" else None,
         validated_only=validated_only,
         target_region=region_filter if region_filter != "All" else None,
-        functional_effect=lof_filter if lof_filter != "All" else None,
+        functional_effect=_lof_db_value if lof_filter != "All" else None,
         pmid=pmid_filter or None,
         author=author_filter or None,
         paper_title=title_filter or None,
@@ -307,7 +321,23 @@ if page == "Search & Browse":
         offset=offset,
     )
 
-    st.markdown(f"**{total_count:,} entries found** (showing {offset+1}-{min(offset+page_size, total_count)} of {total_count:,}, page {page_num}/{total_pages})")
+    # Post-filter by detection method
+    if detection_filter == "Paper-annotated":
+        results = [
+            e for e in results
+            if e.functional_effect_detail and not e.functional_effect_detail.startswith("RTT-predicted")
+        ]
+    elif detection_filter == "RTT-predicted (computational)":
+        results = [
+            e for e in results
+            if e.functional_effect_detail and e.functional_effect_detail.startswith("RTT-predicted")
+        ]
+
+    display_count = len(results) if detection_filter != "All" else total_count
+    if detection_filter != "All":
+        st.markdown(f"**{display_count:,} entries found** (filtered from {total_count:,} by detection method, page {page_num}/{total_pages})")
+    else:
+        st.markdown(f"**{total_count:,} entries found** (showing {offset+1}-{min(offset+page_size, total_count)} of {total_count:,}, page {page_num}/{total_pages})")
 
     if results:
         # Pre-fetch ClinVar match counts for displayed entries
@@ -331,6 +361,18 @@ if page == "Search & Browse":
             if not ext and e.rtt_sequence and e.pbs_sequence:
                 ext = e.rtt_sequence + e.pbs_sequence
             tech = classify_editing_technology(e.prime_editor)
+
+            # Determine stop codon display
+            if e.functional_effect == "Nonsense":
+                stop_codon_display = e.functional_effect_detail or "Yes *"
+                if e.functional_effect_detail and e.functional_effect_detail.startswith("RTT-predicted"):
+                    detection_display = "Computational"
+                else:
+                    detection_display = "Paper-annotated"
+            else:
+                stop_codon_display = "-"
+                detection_display = "-"
+
             row = {
                 "ID": e.id,
                 "Name": e.entry_name or "-",
@@ -343,7 +385,9 @@ if page == "Search & Browse":
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
                 "Edit": e.edit_type or "-",
                 "Region": e.target_region or "-",
-                "LoF": e.functional_effect or "-",
+                "Effect": e.functional_effect or "-",
+                "Stop Codon *": stop_codon_display,
+                "Detection": detection_display,
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
@@ -523,7 +567,15 @@ if page == "Search & Browse":
                         if entry.target_region:
                             st.write(f"Target Region: {entry.target_region} ({entry.target_region_detail or ''})")
                         if entry.functional_effect:
-                            st.write(f"Functional Effect: {entry.functional_effect} ({entry.functional_effect_detail or ''})")
+                            effect_text = f"**Functional Effect: {entry.functional_effect}**"
+                            if entry.functional_effect_detail:
+                                effect_text += f" ({entry.functional_effect_detail})"
+                            if entry.functional_effect == "Nonsense":
+                                if entry.functional_effect_detail and entry.functional_effect_detail.startswith("RTT-predicted"):
+                                    effect_text += " — *Computationally detected*"
+                                else:
+                                    effect_text += " — *Paper-annotated*"
+                            st.markdown(effect_text)
                         st.write(f"Edit: {entry.edit_type} - {entry.edit_description or 'N/A'}")
                         st.write(f"Prime Editor: {entry.prime_editor or 'N/A'}")
                         st.write(f"Cell Type: {entry.cell_type or 'N/A'}")

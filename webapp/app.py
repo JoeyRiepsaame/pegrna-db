@@ -62,15 +62,40 @@ if page == "Search & Browse":
     with col4:
         cell_filter = st.text_input("Cell Type", placeholder="e.g., HEK293T, K562")
 
-    col5, col6, col7 = st.columns(3)
+    col5, col6, col7, col8 = st.columns(4)
     with col5:
         pegrna_type_filter = st.selectbox("pegRNA Type", ["All", "pegRNA", "epegRNA"])
     with col6:
         min_eff = st.number_input("Min Efficiency (%)", min_value=0.0, max_value=100.0, value=0.0)
     with col7:
         max_eff = st.number_input("Max Efficiency (%)", min_value=0.0, max_value=100.0, value=100.0)
+    with col8:
+        func_effect_options = [
+            "All",
+            "Nonsense (Stop Codon *)",
+            "Frameshift",
+            "Splice disruption",
+            "Knockout",
+            "Any LoF",
+        ]
+        func_effect_filter = st.selectbox("Functional Effect", func_effect_options)
 
-    validated_only = st.checkbox("Validated entries only")
+    col9, col10 = st.columns(2)
+    with col9:
+        validated_only = st.checkbox("Validated entries only")
+    with col10:
+        detection_options = ["All", "Paper-annotated", "RTT-predicted (computational)"]
+        detection_filter = st.selectbox("Stop Codon Detection Method", detection_options)
+
+    # Map UI labels to DB values
+    _effect_map = {
+        "Nonsense (Stop Codon *)": "Nonsense",
+        "Frameshift": "Frameshift",
+        "Splice disruption": "Splice disruption",
+        "Knockout": "Knockout",
+        "Any LoF": "Any LoF",
+    }
+    func_effect_db = _effect_map.get(func_effect_filter)
 
     # Query
     results = search_entries(
@@ -83,8 +108,21 @@ if page == "Search & Browse":
         min_efficiency=min_eff if min_eff > 0 else None,
         max_efficiency=max_eff if max_eff < 100 else None,
         validated_only=validated_only,
+        functional_effect=func_effect_db,
         limit=500,
     )
+
+    # Post-filter by detection method if needed
+    if detection_filter == "Paper-annotated":
+        results = [
+            e for e in results
+            if e.functional_effect_detail and not e.functional_effect_detail.startswith("RTT-predicted")
+        ]
+    elif detection_filter == "RTT-predicted (computational)":
+        results = [
+            e for e in results
+            if e.functional_effect_detail and e.functional_effect_detail.startswith("RTT-predicted")
+        ]
 
     st.markdown(f"**{len(results)} entries found**")
 
@@ -92,6 +130,17 @@ if page == "Search & Browse":
         # Build display dataframe
         rows = []
         for e in results:
+            # Determine stop codon display
+            if e.functional_effect == "Nonsense":
+                stop_codon_display = e.functional_effect_detail or "Yes"
+                if e.functional_effect_detail and e.functional_effect_detail.startswith("RTT-predicted"):
+                    detection_display = "Computational"
+                else:
+                    detection_display = "Paper-annotated"
+            else:
+                stop_codon_display = "-"
+                detection_display = "-"
+
             rows.append({
                 "ID": e.id,
                 "Name": e.entry_name or "-",
@@ -102,6 +151,9 @@ if page == "Search & Browse":
                 "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
                 "3' Motif": e.three_prime_extension or "-",
                 "Edit": e.edit_type or "-",
+                "Effect": e.functional_effect or "-",
+                "Stop Codon *": stop_codon_display,
+                "Detection": detection_display,
                 "PE": e.prime_editor or "-",
                 "Cell": e.cell_type or "-",
                 "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
@@ -138,6 +190,19 @@ if page == "Search & Browse":
                         st.write(f"Prime Editor: {entry.prime_editor or 'N/A'}")
                         st.write(f"Cell Type: {entry.cell_type or 'N/A'}")
                         st.write(f"Delivery: {entry.delivery_method or 'N/A'}")
+                        if entry.target_region:
+                            st.write(f"Target Region: {entry.target_region}"
+                                     f"{' - ' + entry.target_region_detail if entry.target_region_detail else ''}")
+                        if entry.functional_effect:
+                            effect_text = f"**Functional Effect: {entry.functional_effect}**"
+                            if entry.functional_effect_detail:
+                                effect_text += f" ({entry.functional_effect_detail})"
+                            if entry.functional_effect == "Nonsense":
+                                if entry.functional_effect_detail and entry.functional_effect_detail.startswith("RTT-predicted"):
+                                    effect_text += " — *Computationally detected*"
+                                else:
+                                    effect_text += " — *Paper-annotated*"
+                            st.markdown(effect_text)
                         st.markdown("**Results**")
                         st.write(f"Editing Efficiency: {entry.editing_efficiency or 'N/A'}%")
                         st.write(f"Product Purity: {entry.product_purity or 'N/A'}%")
