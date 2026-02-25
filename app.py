@@ -20,6 +20,15 @@ def strip_html(text: str) -> str:
     """Strip HTML tags from text (e.g., <i>in vivo</i> -> in vivo)."""
     return re.sub(r"<[^>]+>", "", text) if text else text
 
+def fmt_efficiency(val) -> str:
+    """Format editing efficiency, handling non-numeric strings gracefully."""
+    if val is None:
+        return "-"
+    try:
+        return f"{float(val):.1f}"
+    except (ValueError, TypeError):
+        return str(val)
+
 # SpCas9 scaffold (tracrRNA) used for full pegRNA sequence reconstruction
 SCAFFOLD = "GTTTAAGAGCTATGCTGGAAACAGCATAGCAAGTTTAAATAAGGCTAGTCCGTTATCAACTTGAAAAAGTGGCACCGAGTCGGTGC"
 
@@ -205,7 +214,7 @@ if page == "Search & Browse":
                             "Gene": e.target_gene or "-",
                             f"{seq_field.upper()}": getattr(e, attr) or "-",
                             "Edit": e.edit_type or "-",
-                            "Eff (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency else "-",
+                            "Eff (%)": fmt_efficiency(e.editing_efficiency),
                             "PE": e.prime_editor or "-",
                             "Cell": e.cell_type or "-",
                             "PMID": e.paper.pmid if e.paper else "-",
@@ -392,7 +401,7 @@ if page == "Search & Browse":
                 "Detection": detection_display,
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
-                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
+                "Efficiency (%)": fmt_efficiency(e.editing_efficiency),
                 "Paper PMID": e.paper.pmid if e.paper else "-",
                 "Paper Title": (strip_html(e.paper.title)[:60] + "...") if e.paper and e.paper.title and len(strip_html(e.paper.title)) > 60 else (strip_html(e.paper.title) if e.paper and e.paper.title else "-"),
             }
@@ -467,7 +476,7 @@ if page == "Search & Browse":
                 "Effect": e.functional_effect or "-",
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
-                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
+                "Efficiency (%)": fmt_efficiency(e.editing_efficiency),
                 "Paper PMID": e.paper.pmid if e.paper else "-",
                 "Paper Title": (strip_html(e.paper.title)[:60] + "...") if e.paper and e.paper.title and len(strip_html(e.paper.title)) > 60 else (strip_html(e.paper.title) if e.paper and e.paper.title else "-"),
             })

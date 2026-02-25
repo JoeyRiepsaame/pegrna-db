@@ -14,6 +14,15 @@ import config
 from database.models import init_db, Paper, PegRNAEntry
 from database.operations import search_entries, get_stats
 
+def fmt_efficiency(val) -> str:
+    """Format editing efficiency, handling non-numeric strings gracefully."""
+    if val is None:
+        return "-"
+    try:
+        return f"{float(val):.1f}"
+    except (ValueError, TypeError):
+        return str(val)
+
 # --- Page Config ---
 st.set_page_config(
     page_title="pegRNA Database",
@@ -162,7 +171,7 @@ if page == "Search & Browse":
                 "Detection": detection_display,
                 "PE": e.prime_editor or "-",
                 "Cell": e.cell_type or "-",
-                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
+                "Efficiency (%)": fmt_efficiency(e.editing_efficiency),
                 "Confidence": f"{e.confidence_score:.2f}" if e.confidence_score else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
             })
