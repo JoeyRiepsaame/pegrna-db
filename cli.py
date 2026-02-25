@@ -971,15 +971,20 @@ def annotate_lof(
         if not dry_run:
             session.commit()
 
-        comp_classified = comp_counts["Nonsense"] + comp_counts["Frameshift"]
+        comp_lof = comp_counts["Nonsense"] + comp_counts["Frameshift"]
+        comp_classified = comp_lof + comp_counts.get("Missense", 0) + comp_counts.get("Synonymous", 0) + comp_counts.get("In-frame indel", 0)
         console.print(f"\n[bold]Phase 2 results:[/bold]")
         console.print(f"  Candidates (exon + RTT): {comp_counts['total']:,}")
         console.print(f"  Nonsense (RTT-predicted):{comp_counts['Nonsense']:,}")
         console.print(f"  Frameshift (RTT-pred.):  {comp_counts['Frameshift']:,}")
-        console.print(f"  [bold]Total new LoF found:   {comp_classified:,}[/bold]")
+        console.print(f"  Missense:                {comp_counts.get('Missense', 0):,}")
+        console.print(f"  Synonymous:              {comp_counts.get('Synonymous', 0):,}")
+        console.print(f"  In-frame indel:          {comp_counts.get('In-frame indel', 0):,}")
+        console.print(f"  [bold]Total LoF:             {comp_lof:,}[/bold]")
+        console.print(f"  [bold]Total classified:      {comp_classified:,}[/bold]")
         console.print(f"  No CDS available:        {comp_counts['no_cds']:,}")
         console.print(f"  Errors:                  {comp_counts['errors']:,}")
-        console.print(f"  No effect detected:      {comp_counts['skipped']:,}")
+        console.print(f"  Not classifiable:        {comp_counts['skipped']:,}")
 
     if dry_run:
         console.print("\n[yellow]Dry run — no changes committed[/yellow]")

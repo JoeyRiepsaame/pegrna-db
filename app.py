@@ -141,7 +141,7 @@ if page == "Search & Browse":
     with col_reg:
         region_filter = st.selectbox("Target Region", ["All", "Exon", "Intron", "Splice site"], key="filter_region")
     with col_lof:
-        lof_filter = st.selectbox("Functional Effect", ["All", "Any LoF", "Nonsense (Stop Codon *)", "Frameshift", "Splice disruption", "Knockout"], key="filter_lof")
+        lof_filter = st.selectbox("Functional Effect", ["All", "Any LoF", "Nonsense (Stop Codon *)", "Frameshift", "Splice disruption", "Knockout", "Missense", "Synonymous", "In-frame indel"], key="filter_lof")
     with col_v:
         validated_only = st.checkbox("Validated entries only", key="filter_validated")
     with col_cv:
@@ -259,7 +259,9 @@ if page == "Search & Browse":
 
     if lof_filter != "All":
         if lof_filter == "Any LoF":
-            count_query = count_query.filter(_PE.functional_effect.isnot(None))
+            count_query = count_query.filter(
+                _PE.functional_effect.in_(["Nonsense", "Frameshift", "Splice disruption", "Knockout"])
+            )
         else:
             count_query = count_query.filter(_PE.functional_effect == _lof_db_value)
     if tech_filter == "Prime Editing":

@@ -76,6 +76,9 @@ if page == "Search & Browse":
             "Frameshift",
             "Splice disruption",
             "Knockout",
+            "Missense",
+            "Synonymous",
+            "In-frame indel",
             "Any LoF",
         ]
         func_effect_filter = st.selectbox("Functional Effect", func_effect_options)
@@ -93,6 +96,9 @@ if page == "Search & Browse":
         "Frameshift": "Frameshift",
         "Splice disruption": "Splice disruption",
         "Knockout": "Knockout",
+        "Missense": "Missense",
+        "Synonymous": "Synonymous",
+        "In-frame indel": "In-frame indel",
         "Any LoF": "Any LoF",
     }
     func_effect_db = _effect_map.get(func_effect_filter)

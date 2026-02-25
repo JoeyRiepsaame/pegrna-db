@@ -153,7 +153,9 @@ def search_entries(
         query = query.filter(PegRNAEntry.target_region == target_region)
     if functional_effect:
         if functional_effect == "Any LoF":
-            query = query.filter(PegRNAEntry.functional_effect.isnot(None))
+            query = query.filter(
+                PegRNAEntry.functional_effect.in_(["Nonsense", "Frameshift", "Splice disruption", "Knockout"])
+            )
         else:
             query = query.filter(PegRNAEntry.functional_effect == functional_effect)
 

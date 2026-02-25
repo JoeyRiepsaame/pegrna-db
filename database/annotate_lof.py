@@ -1,14 +1,19 @@
-"""Annotate pegRNA entries with functional effect (Loss-of-Function) classification.
+"""Annotate pegRNA entries with functional effect classification.
 
 Phase 1 (regex): HGVS notation in entry_name, target_region, edit_description.
 Phase 2 (computational): Translate RTT sequences against gene CDS to detect
-    premature stop codons and frameshifts.
+    premature stop codons, frameshifts, in-frame indels, missense, and synonymous.
 
 Classification priority (Phase 1):
 1. Nonsense (stop codon) - HGVS "Ter" pattern or "nonsense"/"stop codon" keywords
 2. Frameshift - HGVS "fs" pattern
 3. Splice disruption - target_region == "Splice site"
 4. Knockout (annotated) - edit_description contains KO/LoF/knockout keywords
+
+Phase 2 additional classifications:
+5. In-frame indel - length change divisible by 3
+6. Missense - amino acid change(s) without stop/frameshift
+7. Synonymous - no amino acid change in edited region
 """
 import json
 import re
@@ -324,7 +329,38 @@ def detect_premature_stop(
             f"RTT-predicted: {abs(len_diff)}bp {direction} (frameshift)"
         )
 
-    return None, None
+    # Check for in-frame indel (length change divisible by 3 but != 0)
+    if len_diff != 0 and len_diff % 3 == 0:
+        direction = "insertion" if len_diff > 0 else "deletion"
+        aa_change = abs(len_diff) // 3
+        return "In-frame indel", (
+            f"RTT-predicted: {abs(len_diff)}bp {direction} "
+            f"({aa_change} aa {'gain' if len_diff > 0 else 'loss'}, in-frame)"
+        )
+
+    # No length change — compare proteins for missense vs synonymous
+    # Find the first amino acid difference in the edited region
+    edit_aa_start = full_ref_start // 3
+    edit_aa_end = max(edit_aa_start + 1, (full_ref_end + 2) // 3)  # round up
+    # Clamp to protein lengths
+    edit_aa_end = min(edit_aa_end, len(ref_protein), len(edited_protein))
+
+    ref_window = ref_protein[edit_aa_start:edit_aa_end]
+    edited_window = edited_protein[edit_aa_start:edit_aa_end]
+
+    if ref_window != edited_window:
+        # Count amino acid changes
+        changes = sum(1 for r, e in zip(ref_window, edited_window) if r != e)
+        # Build detail: show first change
+        for i, (r, e) in enumerate(zip(ref_window, edited_window)):
+            if r != e:
+                aa_pos = edit_aa_start + i + 1  # 1-based
+                return "Missense", (
+                    f"RTT-predicted: p.{r}{aa_pos}{e}"
+                    + (f" (+{changes - 1} more)" if changes > 1 else "")
+                )
+
+    return "Synonymous", f"RTT-predicted: no amino acid change in edited region (aa {edit_aa_start+1}-{edit_aa_end})"
 
 
 def annotate_lof_computational(
@@ -385,6 +421,9 @@ def annotate_lof_computational(
     counts = {
         "Nonsense": 0,
         "Frameshift": 0,
+        "In-frame indel": 0,
+        "Missense": 0,
+        "Synonymous": 0,
         "upgraded_from_splice": 0,
         "skipped": 0,
         "no_cds": 0,
@@ -449,7 +488,10 @@ def annotate_lof_computational(
             console.print(
                 f"  Processed {processed_genes:,} genes | "
                 f"Nonsense: {counts['Nonsense']:,} | "
-                f"Frameshift: {counts['Frameshift']:,}"
+                f"Frameshift: {counts['Frameshift']:,} | "
+                f"Missense: {counts['Missense']:,} | "
+                f"Synonymous: {counts['Synonymous']:,} | "
+                f"In-frame: {counts['In-frame indel']:,}"
             )
 
     if not dry_run:
