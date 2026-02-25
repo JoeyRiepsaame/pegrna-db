@@ -205,7 +205,7 @@ if page == "Search & Browse":
                             "Gene": e.target_gene or "-",
                             f"{seq_field.upper()}": getattr(e, attr) or "-",
                             "Edit": e.edit_type or "-",
-                            "Eff (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency else "-",
+                            "Eff (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency else "-",
                             "PE": e.prime_editor or "-",
                             "Cell": e.cell_type or "-",
                             "PMID": e.paper.pmid if e.paper else "-",
@@ -390,7 +390,7 @@ if page == "Search & Browse":
                 "Detection": detection_display,
                 "Editor": e.prime_editor or "-",
                 "Organism": e.target_organism or "-",
-                "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
+                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
                 "Paper Title": (strip_html(e.paper.title)[:60] + "...") if e.paper and e.paper.title and len(strip_html(e.paper.title)) > 60 else (strip_html(e.paper.title) if e.paper and e.paper.title else "-"),
             }
@@ -401,14 +401,82 @@ if page == "Search & Browse":
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, height=600)
 
-        # --- Export filtered results ---
+        # --- Export ALL filtered results (not just current page) ---
         st.markdown("**Export these results**")
+
+        # Use all results for export when total exceeds page size
+        if total_count > page_size:
+            all_export_results = search_entries(
+                session,
+                target_gene=gene_filter or None,
+                edit_type=edit_type_filter if edit_type_filter != "All" else None,
+                cell_type=cell_filter or None,
+                prime_editor=pe_filter if pe_filter != "All" else None,
+                pegrna_type=pegrna_type_filter if pegrna_type_filter != "All" else None,
+                min_efficiency=min_eff if min_eff > 0 else None,
+                max_efficiency=max_eff if max_eff < 100 else None,
+                target_organism=organism_filter or None,
+                editing_technology=tech_filter if tech_filter != "All" else None,
+                validated_only=validated_only,
+                target_region=region_filter if region_filter != "All" else None,
+                functional_effect=_lof_db_value if lof_filter != "All" else None,
+                pmid=pmid_filter or None,
+                author=author_filter or None,
+                paper_title=title_filter or None,
+                sort_by=sort_by,
+                sort_desc=sort_desc,
+                limit=50000,
+                offset=0,
+            )
+            # Apply same post-filter by detection method
+            if detection_filter == "Paper-annotated":
+                all_export_results = [
+                    e for e in all_export_results
+                    if e.functional_effect_detail and not e.functional_effect_detail.startswith("RTT-predicted")
+                ]
+            elif detection_filter == "RTT-predicted (computational)":
+                all_export_results = [
+                    e for e in all_export_results
+                    if e.functional_effect_detail and e.functional_effect_detail.startswith("RTT-predicted")
+                ]
+            export_label = f"all {len(all_export_results)}"
+        else:
+            all_export_results = results
+            export_label = str(len(results))
+
+        # Build CSV from all export results
+        export_rows = []
+        for e in all_export_results:
+            ext = getattr(e, 'extension_sequence', None)
+            if not ext and e.rtt_sequence and e.pbs_sequence:
+                ext = e.rtt_sequence + e.pbs_sequence
+            export_rows.append({
+                "ID": e.id,
+                "Name": e.name or "-",
+                "Tech": e.editing_technology or "-",
+                "Type": e.pegrna_type or "-",
+                "Gene": e.target_gene or "-",
+                "Spacer": e.spacer_sequence or "-",
+                "3' Extension (RTT + PBS)": ext or "-",
+                "PBS": f"{e.pbs_length}nt" if e.pbs_length else "-",
+                "RTT": f"{e.rtt_length}nt" if e.rtt_length else "-",
+                "Edit": e.edit_type or "-",
+                "Region": e.target_region or "-",
+                "Effect": e.functional_effect or "-",
+                "Editor": e.prime_editor or "-",
+                "Organism": e.target_organism or "-",
+                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
+                "Paper PMID": e.paper.pmid if e.paper else "-",
+                "Paper Title": (strip_html(e.paper.title)[:60] + "...") if e.paper and e.paper.title and len(strip_html(e.paper.title)) > 60 else (strip_html(e.paper.title) if e.paper and e.paper.title else "-"),
+            })
+        export_df = pd.DataFrame(export_rows)
+
         exp_col1, exp_col2, exp_col3 = st.columns(3)
 
         with exp_col1:
-            csv_export = df.to_csv(index=False)
+            csv_export = export_df.to_csv(index=False)
             st.download_button(
-                f"Download CSV ({len(rows)} rows)",
+                f"Download CSV ({export_label} rows)",
                 csv_export,
                 file_name="pegrna_search_results.csv",
                 mime="text/csv",
@@ -417,7 +485,7 @@ if page == "Search & Browse":
         with exp_col2:
             # FASTA export
             fasta_lines = []
-            for e in results:
+            for e in all_export_results:
                 ext = getattr(e, 'extension_sequence', None)
                 if not ext and e.rtt_sequence and e.pbs_sequence:
                     ext = e.rtt_sequence + e.pbs_sequence
@@ -430,7 +498,7 @@ if page == "Search & Browse":
                     fasta_lines.append(full)
             if fasta_lines:
                 st.download_button(
-                    f"Download FASTA ({len(fasta_lines)//2} seqs)",
+                    f"Download FASTA ({export_label} seqs)",
                     "\n".join(fasta_lines),
                     file_name="pegrna_search_results.fasta",
                     mime="text/plain",
@@ -441,7 +509,7 @@ if page == "Search & Browse":
         with exp_col3:
             # SnapGene GenBank format
             gb_records = []
-            for e in results:
+            for e in all_export_results:
                 ext = getattr(e, 'extension_sequence', None)
                 if not ext and e.rtt_sequence and e.pbs_sequence:
                     ext = e.rtt_sequence + e.pbs_sequence
@@ -498,7 +566,7 @@ if page == "Search & Browse":
 
             if gb_records:
                 st.download_button(
-                    f"Download GenBank/SnapGene ({len(gb_records)} seqs)",
+                    f"Download GenBank/SnapGene ({export_label} seqs)",
                     "\n".join(gb_records),
                     file_name="pegrna_search_results.gb",
                     mime="text/plain",

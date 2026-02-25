@@ -156,7 +156,7 @@ if page == "Search & Browse":
                 "Detection": detection_display,
                 "PE": e.prime_editor or "-",
                 "Cell": e.cell_type or "-",
-                "Efficiency (%)": f"{e.editing_efficiency:.1f}" if e.editing_efficiency is not None else "-",
+                "Efficiency (%)": f"{float(e.editing_efficiency):.1f}" if e.editing_efficiency is not None else "-",
                 "Confidence": f"{e.confidence_score:.2f}" if e.confidence_score else "-",
                 "Paper PMID": e.paper.pmid if e.paper else "-",
             })
