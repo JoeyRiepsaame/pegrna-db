@@ -464,7 +464,7 @@ if page == "Search & Browse":
             export_rows.append({
                 "ID": e.id,
                 "Name": e.entry_name or "-",
-                "Tech": e.editing_technology or "-",
+                "Tech": classify_editing_technology(e.prime_editor),
                 "Type": e.pegrna_type or "-",
                 "Gene": e.target_gene or "-",
                 "Spacer": e.spacer_sequence or "-",
