@@ -463,7 +463,7 @@ if page == "Search & Browse":
                 ext = e.rtt_sequence + e.pbs_sequence
             export_rows.append({
                 "ID": e.id,
-                "Name": e.name or "-",
+                "Name": e.entry_name or "-",
                 "Tech": e.editing_technology or "-",
                 "Type": e.pegrna_type or "-",
                 "Gene": e.target_gene or "-",
